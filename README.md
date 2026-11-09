@@ -15,7 +15,7 @@ well-known pairing key `"tado pairing key"`). The device adopts it and reports
 under it. The cloud-only per-device KEK (TLV tag `0x07`) that blocks passive key
 recovery is simply never involved. The trade-off is inherent: a device joined to
 this coordinator **leaves the tado bridge/app/cloud** (one coordinator per
-device).
+device), and joining needs a button long-press on the device.
 
 ## Topology
 
@@ -24,7 +24,7 @@ device).
    |  868 MHz CSL  (hard real-time)
 [CC1312]   PHY + MAC + CSL + CCM* + local autonomy      <- all timing lives here
    |  UART
-[ESP32]    transparent UART <-> TCP (+TLS) bridge        <- dumb pipe, no logic
+[ESP32]    transparent UART <-> TCP bridge               <- dumb pipe, no logic
    |  WiFi / LAN
 [container]  Java daemon: CoAP + 6LoWPAN + zones + schedules + HTTP API
    |
@@ -39,19 +39,19 @@ the LAN. The ESP32 is only a wire, so the brain stays a full JVM.
 | Path          | Tier                | Language | Notes |
 |---------------|---------------------|----------|-------|
 | `firmware/`   | CC1312 MAC engine   | C        | PHY/MAC/CSL/CCM*, real-time, autonomous |
-| `bridge/`     | ESP32 serial bridge | C / YAML | transparent UART<->TCP(+TLS), no logic |
+| `bridge/`     | ESP32 serial bridge | C / YAML | transparent UART<->TCP, no logic |
 | `host/`       | Java control daemon | Java     | CoAP/6LoWPAN/zones/schedules/API |
-| `reference/`  | specs & oracles     | -        | freedo as behavioural oracle; sniffer repo |
-| `docs/`       | plan & design       | -        | start at `docs/PLAN.md` |
+| `reference/`  | specs & oracles     | -        | freedo as behavioural oracle |
+| `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec in `docs/JOIN.md` |
 
 ## Heritage
 
-The PHY (868.300 MHz, 50 kbps 2-GFSK, 25 kHz dev, sync `0x91D3`), the link crypto
-(AES-CCM*), and the pairing-key handshake were reverse-engineered in the sibling
-`re-lab` project and cross-checked against
+The PHY (~868.3 MHz, 50 kbps 2-GFSK, 25 kHz dev, sync `0xD391`, 1-byte length), the link crypto
+(AES-CCM*), and the pairing-key handshake follow
 [`CappyT/freedo`](https://github.com/CappyT/freedo) (an ESP32+CC1101
-reimplementation). freedo's `tado/` package is used here only as a **behavioural
-spec and test oracle**; confirm its licence before reusing any code.
+reimplementation, Apache-2.0), cross-checked against our own captures. freedo's
+`tado/` package is the **behavioural spec and test oracle**; if we reuse its code,
+we keep its licence and NOTICE.
 
 tado is a trademark of its owner; used here only to describe the devices this
 interoperates with. For use with devices you own.

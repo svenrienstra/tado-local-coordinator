@@ -19,3 +19,7 @@ bridge/.esphome/
 .DS_Store
 .idea/
 .vscode/
+
+# Coordinator state: identity (holds the network key) and captures. --state
+# defaults to ./state wherever the tool runs.
+state/

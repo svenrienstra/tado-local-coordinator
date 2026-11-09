@@ -1,0 +1,3 @@
+[submodule "reference/freedo"]
+	path = reference/freedo
+	url = https://github.com/CappyT/freedo.git
