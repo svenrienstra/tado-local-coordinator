@@ -1,0 +1,21 @@
+# firmware build output
+firmware/**/build/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+
+# Java
+host/**/build/
+host/**/target/
+*.class
+
+# ESP / PlatformIO / ESPHome
+bridge/.pioenvs/
+bridge/.esphome/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
