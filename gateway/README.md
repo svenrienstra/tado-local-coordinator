@@ -8,7 +8,8 @@ resource model: pairing, `auth/token`, `time` (from SNTP), device reports and
 setpoint writes. It keeps the network key, frame-counter floor and device table
 in NVS, publishes device state over MQTT with Home Assistant discovery, and
 takes commands such as setpoints and the pair window from MQTT
-(`../docs/PLAN.md` 3.7). Updates over WiFi (OTA).
+(`../docs/PLAN.md` 3.7). Rooms are configured on a small web page it serves
+(`../docs/PLAN.md` 3.9). Updates over WiFi (OTA).
 
 It shares the portable C core of `../firmware/src` (CRC, CCM*, MAC frames).
 

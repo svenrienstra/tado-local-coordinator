@@ -209,8 +209,8 @@ from our own captures.
   there is one. The others take the new setpoint from its echo.
 - **Gateway state:** a zone table in NVS (number, name, kind, members, owner).
   A device is put in a zone when it is paired (the pair command carries the
-  zone) and can be moved later over MQTT. The owner is chosen automatically:
-  the thermostat if the zone has one, else a valve.
+  zone) and can be moved later on the setup page (3.9). The owner is chosen
+  automatically: the thermostat if the zone has one, else a valve.
 - **Later option:** the coordinator as owner of a zone, regulating on a
   temperature sensor from Home Assistant. freedo does this; it adds a
   controller on the gateway.
@@ -231,6 +231,28 @@ from our own captures.
 Consequence: the wall thermostat matters for every room, because the boiler
 only fires on its demand. Its pairing is not verified anywhere yet (M-1 check
 before M4).
+
+### 3.9 Setup page
+Rooms are configured on a small web page that the ESP serves (ESP-IDF HTTP
+server, one static page plus a JSON API, password-protected, no TLS — as 3.3).
+Home Assistant stays the place for daily use (temperatures, setpoints,
+schedules); it cannot offer a decent form for this.
+
+- Rooms: create, rename, delete; move devices between rooms; the owner (the
+  automatic choice by default); the zone options of 3.8.
+- Pairing: open a pair window for a chosen room.
+- Devices: list with status, battery and last seen.
+- Room changes are applied explicitly (edit, then apply), not per click:
+  rewriting a valve's `d/config` makes it home its motor, which costs a full
+  stroke and battery.
+
+Not needed before M4: at M2/M3 the pair command sets up the single room.
+
+**Fallback if the ESP runs out of room** (flash, heap, or CPU next to the
+protocol work; measured at M4): move the setup page off the ESP, either into a
+custom Home Assistant integration (freedo's route) or a small container on the
+LAN that talks to the gateway's JSON API. The gateway keeps the room table
+either way.
 
 ## 4. Components
 
@@ -267,6 +289,7 @@ before M4).
   airtime-aware scheduling (3.6).
 - SNTP for wall-clock time (`time` answers).
 - MQTT client (ESP-IDF `esp-mqtt`) with Home Assistant discovery (3.7).
+- Setup page and JSON API (3.9).
 - OTA updates over WiFi. Updating the CC1312 from the ESP (the ESP speaking
   the ROM bootloader protocol itself) is optional and depends on the wiring
   check in [`WIRING.md`](WIRING.md); otherwise the CC1312 is reflashed by hand
@@ -348,7 +371,8 @@ resetting a hung CC1312. Settle remote CC1312 updates (wiring check in
 ### M4 — Rooms, boiler, scale
 The wall thermostat (after its M-1 check). One room with the thermostat and two
 valves: the valves follow the thermostat's measure, and a zone's demand fires
-the boiler through the thermostat (3.8). Then all rooms, hot water,
+the boiler through the thermostat (3.8). The setup page (3.9), and a check of
+the ESP's flash, heap and CPU headroom. Then all rooms, hot water,
 persistence across power loss (3.2), frame-counter floor across reboots (3.5),
 airtime budget under realistic load (3.6).
 
