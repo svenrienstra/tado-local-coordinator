@@ -3,7 +3,7 @@ package tadocoord.link;
 import com.fazecast.jSerialComm.SerialPort;
 import java.io.IOException;
 
-/** The host link over a USB serial port (CC1312 LaunchPad XDS110 UART). */
+/** The host link over a USB serial port (the CC1312 board's USB-serial chip). */
 public final class SerialTransport implements HostLink.Transport {
     static final int BAUD = 460_800;
 

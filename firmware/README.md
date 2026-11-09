@@ -7,7 +7,7 @@ and frame counter allocation), and the host link (`../docs/HOSTLINK.md`).
 Later: anchored CSL timing (M0), flash-persisted counters, cached Router
 Advertisements and the autonomy layer (M4). See `../docs/PLAN.md`.
 
-Current scope: **M-1** (`../docs/JOIN.md` steps 1-7) on a CC1312R1 LaunchPad
+Current scope: **M-1** (`../docs/JOIN.md` steps 1-7) on a CC1312R1 board (`../docs/WIRING.md`)
 over USB.
 
 ## Layout
@@ -34,17 +34,20 @@ the tests reproduce each frame byte for byte.
 
 ## Flash
 
-- **Debugger (XDS110 on the LaunchPad):** `make flash` erases, programs,
+- **Debugger (XDS110 probe on the board's 10-pin JTAG header):** `make flash` erases, programs,
   verifies and then pin-resets, using UniFlash's DSLite binary (`brew install
   --cask uniflash`, which needs Rosetta; found under `/Applications/TI/UniFlash`,
   override with `DSLITE=...`;
   `CCXML=<your CC1312R1F3 target config>`; UniFlash writes the `.ccxml` when you
   pick "CC1312R1F3" + "Texas Instruments XDS110 USB Debug Probe" and save the
   configuration).
-- **ROM serial bootloader:** the CCFG keeps the bootloader enabled with its
-  backdoor on BTN-1 (DIO13, active low). Hold BTN-1 while resetting, then flash
-  over the UART with `cc2538-bsl.py -p <port> -e -w -v build/coordinator.hex`.
-  This is also the path for remote reflashing through the ESP32 (`PLAN.md` 4.2).
+- **ROM serial bootloader:** the CCFG keeps the bootloader enabled, but the
+  backdoor pin is off by default because the board's pin pull-ups are not
+  known yet. `make clean all BL_PIN=<dio>` turns it on (active low). Then hold
+  that pin low through a reset and flash over the UART with
+  `cc2538-bsl.py -p <port> -e -w -v build/coordinator.hex`. This is the path
+  for remote reflashing through the ESP32 (`PLAN.md` 4.2); pick the pin at
+  M3.5.
 
 Safety: the CCFG leaves debug access enabled and the bootloader on; never
 enable read-out or debug locks.

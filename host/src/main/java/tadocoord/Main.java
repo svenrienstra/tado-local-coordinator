@@ -27,7 +27,7 @@ import tadocoord.link.StatsDelta;
 import tadocoord.link.SerialTransport;
 
 /**
- * M-1 / M2 bench tool: {@code join --port /dev/tty.usbmodemXXXX [--state DIR] [--window SECONDS]}.
+ * M-1 / M2 bench tool: {@code join --port /dev/tty.usbserial-XXXX [--state DIR] [--window SECONDS]}.
  *
  * <p>Opens a pair window on the CC1312 and walks one button-reset device through the join.
  * Exits 0 when the device answers {@code d/pair} under our network key.

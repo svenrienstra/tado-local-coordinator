@@ -45,6 +45,21 @@ $(BUILD)/test: $(CORE) test/test_main.c test/aes_soft.c $(wildcard src/*.h)
 
 DEFINES := -DDeviceFamily_CC13X2 -DDEVICE_LINE_CC13XX -DDEVICE_CC1312R
 
+# ROM bootloader backdoor pin (DIO number, active low); empty = no backdoor.
+# Only set it to a pin that is pulled high on the board, or every reset lands
+# in the bootloader. `make clean` after changing it.
+BL_PIN ?=
+ifneq ($(BL_PIN),)
+DEFINES += -DBL_BACKDOOR_PIN=$(BL_PIN)
+endif
+
+# Host UART pins (DIO numbers). The defaults reach the board's USB-serial chip;
+# bridge mode wires the ESP32 to two free DIOs instead. `make clean` after
+# changing them.
+UART_RX_DIO ?= 2
+UART_TX_DIO ?= 3
+DEFINES += -DUART_RX_DIO=$(UART_RX_DIO) -DUART_TX_DIO=$(UART_TX_DIO)
+
 CFLAGS := -std=c11 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
   -Os -g -ffunction-sections -fdata-sections \
   $(DEFINES) -Isrc -Itarget -I$(SDK)/source -I$(SDK)/kernel/nortos -I$(SDK)/kernel/nortos/posix

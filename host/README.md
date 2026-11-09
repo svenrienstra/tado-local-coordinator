@@ -19,7 +19,7 @@ With the CC1312 flashed and on USB:
 
 ```
 java -jar target/tado-coordinator-host.jar join \
-    --port /dev/tty.usbmodemXXXX1 --state state --window 120
+    --port /dev/tty.usbserial-XXXX --state state --window 120
 ```
 
 then long-press the valve button. The tool opens a pair window, answers the

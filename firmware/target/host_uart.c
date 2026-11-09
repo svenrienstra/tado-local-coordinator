@@ -1,4 +1,6 @@
-/* UART0 on the LaunchPad back-channel pins (RX DIO2, TX DIO3), 460800 8N1. */
+/* UART0 to the host, 460800 8N1. Pins from the Makefile (UART_RX_DIO/UART_TX_DIO):
+ * DIO2/DIO3 reach the board's USB-serial chip; bridge mode moves them to free
+ * DIOs so the ESP32 does not share a line with that chip (docs/WIRING.md). */
 #include <ti/devices/DeviceFamily.h>
 #include DeviceFamily_constructPath(inc/hw_ints.h)
 #include DeviceFamily_constructPath(inc/hw_memmap.h)
@@ -13,8 +15,8 @@
 #include "platform.h"
 
 #define UART_BAUD 460800
-#define PIN_RX    IOID_2
-#define PIN_TX    IOID_3
+#define PIN_RX    UART_RX_DIO /* IOID_n == n */
+#define PIN_TX    UART_TX_DIO
 
 /* Power-of-two rings; RX is filled by the ISR, TX drained by the main loop
  * so a long host write never stalls the radio work. */
