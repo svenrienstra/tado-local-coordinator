@@ -53,13 +53,6 @@ ifneq ($(BL_PIN),)
 DEFINES += -DBL_BACKDOOR_PIN=$(BL_PIN)
 endif
 
-# Host UART pins (DIO numbers). The defaults reach the board's USB-serial chip;
-# bridge mode wires the ESP32 to two free DIOs instead. `make clean` after
-# changing them.
-UART_RX_DIO ?= 2
-UART_TX_DIO ?= 3
-DEFINES += -DUART_RX_DIO=$(UART_RX_DIO) -DUART_TX_DIO=$(UART_TX_DIO)
-
 CFLAGS := -std=c11 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
   -Os -g -ffunction-sections -fdata-sections \
   $(DEFINES) -Isrc -Itarget -I$(SDK)/source -I$(SDK)/kernel/nortos -I$(SDK)/kernel/nortos/posix

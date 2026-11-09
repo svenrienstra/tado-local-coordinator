@@ -2,9 +2,12 @@
 
 A clean-room, local coordinator for tado V3+ 868 MHz heating devices (radiator
 valves, wall thermostats), built from scratch around a **TI CC1312R1** radio and
-a **Java** control daemon. No tado cloud, no HomeKit, no key extraction.
+an **ESP32** gateway that speaks MQTT to Home Assistant. No tado cloud, no
+HomeKit, no key extraction.
 
-> Status: **planning**. Nothing here is built yet. See [`docs/PLAN.md`](docs/PLAN.md).
+> Status: **M-1 built, not yet run on hardware**: the CC1312 firmware and the
+> Java bench tool that tests whether a valve joins with our key. See
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Why this can work without recovering any key
 
@@ -22,27 +25,26 @@ device), and joining needs a button long-press on the device.
 ```
 [valves / wall thermostat]
    |  868 MHz CSL  (hard real-time)
-[CC1312]   PHY + MAC + CSL + CCM* + local autonomy      <- all timing lives here
-   |  UART
-[ESP32]    transparent UART <-> TCP bridge               <- dumb pipe, no logic
-   |  WiFi / LAN
-[container]  Java daemon: CoAP + 6LoWPAN + zones + schedules + HTTP API
-   |
-[Home Assistant]
+[CC1312]   PHY + MAC + CSL + CCM* + keepalive autonomy   <- all timing lives here
+   |  UART (host link)
+[ESP32]    gateway: 6LoWPAN + CoAP + tado resources + MQTT   <- updates over WiFi
+   |  WiFi / LAN, MQTT
+[MQTT broker] -> [Home Assistant]
 ```
 
-The radio sits where the RF needs it; the brain runs as a container anywhere on
-the LAN. The ESP32 is only a wire, so the brain stays a full JVM.
+The CC1312 and the ESP32 form one self-contained device. Device state goes out
+as MQTT events (temperature, setpoint, battery), and commands such as a new
+setpoint come back the same way.
 
 ## Repository layout
 
 | Path          | Tier                | Language | Notes |
 |---------------|---------------------|----------|-------|
 | `firmware/`   | CC1312 MAC engine   | C        | PHY/MAC/CSL/CCM*, real-time, autonomous |
-| `bridge/`     | ESP32 serial bridge | C / YAML | transparent UART<->TCP, no logic |
-| `host/`       | Java control daemon | Java     | CoAP/6LoWPAN/zones/schedules/API |
+| `gateway/`    | ESP32 gateway       | C        | tado protocol, device state, MQTT (not started) |
+| `host/`       | Java bench tool     | Java     | runs M-1 on a Mac; reference for the gateway |
 | `reference/`  | specs & oracles     | -        | freedo as behavioural oracle |
-| `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec in `docs/JOIN.md` |
+| `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec `docs/JOIN.md`, wiring `docs/WIRING.md` |
 
 ## Heritage
 

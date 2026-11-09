@@ -1,8 +1,8 @@
-# Host link — CC1312 <-> Java daemon wire protocol (v0)
+# Host link — CC1312 <-> host wire protocol (v0)
 
-The framed protocol of `PLAN.md` 3.4, version 0, as used from M-1 on (CC1312 on
-USB UART). Little-endian throughout. Link encryption (`PLAN.md` 3.3) is **not**
-in v0; it is added before the link leaves the USB cable (M3.5).
+The framed protocol of `PLAN.md` 3.4, version 0. The host is the Java bench
+tool over USB serial for M-1 and the ESP32 gateway over a direct UART from M2.
+Little-endian throughout. The link is not encrypted (`PLAN.md` 3.3).
 
 ## Framing
 

@@ -45,9 +45,9 @@ the tests reproduce each frame byte for byte.
   backdoor pin is off by default because the board's pin pull-ups are not
   known yet. `make clean all BL_PIN=<dio>` turns it on (active low). Then hold
   that pin low through a reset and flash over the UART with
-  `cc2538-bsl.py -p <port> -e -w -v build/coordinator.hex`. This is the path
-  for remote reflashing through the ESP32 (`PLAN.md` 4.2); pick the pin at
-  M3.5.
+  `cc2538-bsl.py -p <port> -e -w -v build/coordinator.hex`. Whether the ESP32
+  can drive this remotely depends on the board wiring (`../docs/WIRING.md`);
+  decided at M3.5.
 
 Safety: the CCFG leaves debug access enabled and the bootloader on; never
 enable read-out or debug locks.

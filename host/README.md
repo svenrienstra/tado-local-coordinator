@@ -1,10 +1,12 @@
-# host/ — Java control daemon (containerised)
+# host/ — Java bench tool
 
-The brain: no hard deadlines. CoAP, 6LoWPAN, the tado resource model,
-coordinator logic (pair window, network-key generation, device DB,
-zones/schedules, persistence), the framed reconnect-tolerant link to the CC1312
-(`../docs/HOSTLINK.md`), and later an HTTP API for Home Assistant. CCM* is
-decrypt/validate only — the CC1312 owns outgoing seq/counters and sealing.
+Runs M-1 on a Mac with the CC1312 on USB: the pair window, `d/pair` with our
+own network key, `auth/token` and `time`, over the host link
+(`../docs/HOSTLINK.md`). CCM* is decrypt/validate only — the CC1312 owns
+outgoing seq/counters and sealing.
+
+It is not deployed. From M2 the ESP32 gateway (`../gateway/`) is the host; this
+code is the tested reference for that C port (`../docs/PLAN.md` 4.3).
 
 Build: Maven wrapper, Java 25 (the enforcer rejects an older JDK).
 

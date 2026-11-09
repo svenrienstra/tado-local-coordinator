@@ -1,19 +1,26 @@
-# Build plan — clean-room tado coordinator on CC1312
+# Build plan — clean-room tado coordinator on CC1312 + ESP32
 
-Status: **planning / not started**. This document is the agreed design and
-sequencing. It supersedes ad-hoc notes; update it as decisions firm up.
+Status: **M-1 built, not yet run on hardware**. This document is the agreed
+design and sequencing. It supersedes ad-hoc notes; update it as decisions firm
+up.
 
 ---
 
 ## 1. Goal
 
 Replace the tado internet bridge for the radiator valves and wall thermostats of
-one home, under fully local control, built from scratch:
+one home, under fully local control, built from scratch, as one self-contained
+device:
 
 - **CC1312R1** as the radio / MAC / CSL real-time engine.
-- An **ESP32** as a transparent UART<->WiFi bridge (dumb pipe only).
-- A **Java daemon in a container** as the control brain, exposing an HTTP API to
-  Home Assistant.
+- An **ESP32 gateway** running the tado protocol and the coordinator logic. It
+  publishes device state (temperature, setpoint, battery, …) as **MQTT** events
+  and takes commands (setpoint, pair window, …) over MQTT.
+- **Home Assistant** picks the devices up through MQTT discovery. No container or
+  always-on server is needed.
+
+The Java program in `host/` is the **bench tool** for M-1 (CC1312 on USB to a
+Mac). It is not deployed.
 
 No tado cloud, no HomeKit, no device key extraction (we mint the network key as
 the coordinator — see the README).
@@ -21,15 +28,17 @@ the coordinator — see the README).
 ## 2. Guiding principles
 
 1. **Two tiers, timing on-chip.** The CC1312 owns everything with a deadline;
-   the Java brain owns everything without one. freedo split this way because its
-   CC1101 is dumb; we split this way on purpose so the brain can live in a
-   remote container.
-2. **Reuse what is proven.** freedo's `tado/` package and `docs/PROTOCOL.md` as
+   the ESP32 owns everything without one.
+2. **Keep the CC1312 small and stable.** Its firmware is the hard part to
+   update: remote reflash may not be possible on this board
+   ([`WIRING.md`](WIRING.md)). The ESP32 updates over WiFi (OTA), so logic that
+   will change (the tado resource model, MQTT, device handling) lives there.
+3. **Reuse what is proven.** freedo's `tado/` package and `docs/PROTOCOL.md` as
    an executable spec + golden fixtures, and our own captures of real traffic.
-3. **Risk first.** The project lives or dies on one question: does a device
+4. **Risk first.** The project lives or dies on one question: does a device
    accept a network key *we* mint? Prove that (M-1) before building any stack,
    then confirm CSL timing (M0).
-4. **Safety.** It controls heating. Keep a manual fallback, keep devices on their
+5. **Safety.** It controls heating. Keep a manual fallback, keep devices on their
    offline behaviour, keep the CC1312 bootloader unlocked, never lock fuses.
 
 ## 3. Topology and the constraints it forces
@@ -37,20 +46,20 @@ the coordinator — see the README).
 ```
 [valves / wall thermostat]
    |  868 MHz CSL  (hard real-time)
-[CC1312]   PHY + MAC + CSL + CCM* + local autonomy
-   |  UART  (link-encrypted frames)
-[ESP32]    transparent UART <-> TCP bridge
-   |  WiFi / LAN
-[container]  Java daemon  (CoAP + 6LoWPAN + zones + schedules + HTTP API)
+[CC1312]   PHY + MAC + CSL + CCM* sealing + keepalive autonomy
+   |  UART 460800, host link (framed, CRC'd; docs/HOSTLINK.md)
+[ESP32]    gateway: 6LoWPAN + CoAP + tado resources + device DB + MQTT + SNTP + OTA
+   |  WiFi / LAN, MQTT (no TLS)
+[MQTT broker]  e.g. Mosquitto (Home Assistant add-on)
    |
 [Home Assistant]
 ```
 
-Putting the brain across a WiFi link is fine, but it forces these
-non-negotiable design rules:
+The CC1312 and the ESP32 sit next to each other, wired by UART and powered
+together. The only network hop is MQTT.
 
 ### 3.1 All real-time work lives on the CC1312
-CSL timing cannot survive a WiFi + container round-trip. Reference timings
+CSL timing cannot survive a UART round-trip through the ESP. Reference timings
 (freedo's on-air measurements; re-measure ourselves in M0):
 
 - Enhanced-ACK starts **0-1 ms after the Data frame ends** (the 29-byte ACK
@@ -64,58 +73,58 @@ CSL timing cannot survive a WiFi + container round-trip. Reference timings
 - Retransmits: devices after 1.5-3.6 s, the coordinator after 2-6 s.
 
 Enhanced-ACKs are **not secured** (a software FCS only, no MIC), so the ACK path
-needs no crypto. The remote link may carry **only** non-time-critical
-application messages (decoded frames up; CoAP/commands down), nothing with a
-deadline tighter than a few hundred ms.
+needs no crypto. The host link carries **only** non-time-critical application
+messages (decoded frames up; CoAP/commands down).
 
-### 3.2 The CC1312 must keep the network alive when the brain is away
-WiFi blips, container restarts and redeploys must not drop the valves. The
-firmware carries a small **autonomy layer**; the brain is a **control plane**,
-not a per-poll data plane.
+### 3.2 Failure domains
+Two things can go away while the valves must stay joined:
+
+- **WiFi or the MQTT broker.** The ESP keeps running the network: it answers
+  `time`, `auth/token` and device uplinks, and keeps its device state. Home
+  Assistant loses control and readings until MQTT returns. Commands sent while
+  disconnected are lost, not replayed (3.7).
+- **The ESP itself** (OTA reboot, crash, watchdog reset: seconds). The CC1312
+  keeps Enhanced-ACKing uplinks and broadcasting Router Advertisements, so the
+  valves do not notice. The RA payload is pre-built by the ESP and cached on
+  the CC1312, which only re-secures it with a fresh seq/counter. Zone traffic
+  between devices (3.8) pauses, because the ESP relays it; the wall thermostat
+  keeps the last heat demand it got for up to its 30-minute Max-Age, so a
+  reboot of seconds goes unnoticed.
 
 Known (freedo `PROTOCOL.md`, "Router advertisement"): a device that receives no
 ICMPv6 Router Advertisement for about **20 minutes stops reporting** and floods
-Router Solicitations; an advertisement brings it back within ~4 minutes. So the
-autonomy layer must at minimum:
-
-- broadcast a Router Advertisement every 200-600 s (behind a 254-frame wake-up
-  train) and answer Router Solicitations (not within 3 s of the last one). The
-  RA payload is pre-built by the brain and cached on the CC1312, which only
-  re-secures it with a fresh seq/counter;
-- keep Enhanced-ACKing device uplinks.
+Router Solicitations; an advertisement brings it back within ~4 minutes. The
+CC1312 broadcasts an RA every 200-600 s (behind a 254-frame wake-up train) and
+answers Router Solicitations (not within 3 s of the last one).
 
 Still open, to answer from freedo + observation before M4:
 
-- What does a valve do while the brain is away but RAs continue: keep its
-  schedule, hold its setpoint? Its CoAP uplinks (CON) go unanswered — how long
-  until it gives up or rejoins?
 - `time` must be answered within 5 s of the request (the valve discards later
-  answers), so it cannot be served while the brain is away; does a missing
-  `time` answer matter in steady state?
-- Downlink queue for sleeping devices: depth per device, entry expiry, and what
-  happens to queued frames when the brain reconnects (resync rules).
+  answers), so it goes unanswered while the ESP reboots; does a missing answer
+  matter in steady state?
+- Downlink queue for sleeping devices: depth per device, entry expiry.
 
-Whatever the answers, the CC1312 must survive **its own** power loss while the
-brain is away: the network key, the outgoing frame counter (3.5) and per-device
-state live in **flash**, not just RAM.
+Persistence: both chips lose power together, so state lives on the ESP (NVS
+flash): the network key, the frame-counter floor (3.5) and the device table. The
+ESP sends them to the CC1312 with `CONFIG` after every CC1312 boot; the CC1312
+keeps them in RAM only.
 
-### 3.3 Encrypt the bridge link end-to-end
-The control link carries the network key and heating control over the LAN.
-Rather than terminating TLS on the ESP32 (no TLS in ESPHome's stream server;
-certificate handling on the ESP is real work), the framed protocol (3.4) is
-itself **AES-CCM-encrypted between the CC1312 and the Java daemon** with a
-pre-shared link key (the CC1312 has a hardware AES engine). The ESP stays a
-truly dumb pipe, and the network key is never plaintext even on the UART.
-WireGuard / a trusted VLAN remain optional extra layers.
+### 3.3 No transport encryption on the LAN
+The UART is a wire on the bench, inside one enclosure, so the host link is not
+encrypted. MQTT runs without TLS, with broker username and password.
 
-### 3.4 Wire protocol consequence
-Because the TCP tunnel can drop mid-frame and reconnect, the CC1312<->brain
-protocol is **end-to-end framed**: length-prefixed, CRC'd, sequence-numbered,
-encrypted (3.3), with a resync marker and app-level ack/retransmit. The framing
-is between the two smart ends. Mirror freedo's `interface_module` *semantics*
-(RX-up, timed-TX-down, key provisioning, pair-window control) so freedo stays
-usable as an oracle, but define our own binary wire format (it is a Java<->C
-boundary, not Go).
+Accepted risk: anyone who can sniff the LAN sees heating state and the MQTT
+credentials, and with those could change setpoints. The **network key never
+leaves the ESP** and is never published over MQTT. If the LAN is not trusted
+later, ESP-IDF's MQTT client supports TLS; switching it on changes no topics.
+
+### 3.4 Host link
+The CC1312<->ESP protocol stays the framed v0 protocol of
+[`HOSTLINK.md`](HOSTLINK.md): length-prefixed, CRC'd, sequence-numbered, with a
+resync marker and request/reply retransmit. Over a direct UART this covers
+resets of either side and line noise. Mirror freedo's `interface_module`
+*semantics* (RX-up, timed-TX-down, key provisioning, pair-window control) so
+freedo stays usable as an oracle.
 
 ### 3.5 One owner for MAC seq and frame counter
 The CCM* nonce is `frame[0:13]` = FCF + MAC seq + destination EUI + 2 source
@@ -129,17 +138,99 @@ take "last unicast counter + 1".
 
 Rule: **the CC1312 is the sole allocator of MAC seq and frame counter and the
 sole encryptor** of outgoing link frames (it must originate beacons, RAs and
-autonomy traffic anyway). It persists the counter to flash in reserved blocks
-(write a floor N ahead, skip to it on boot — freedo uses 4096). The Java daemon
-builds plaintext payloads and uses CCM* for **decryption / validation only**.
+autonomy traffic anyway). The ESP reserves the counter in blocks: it stores a
+floor N ahead in NVS and gives the CC1312 the old floor in `CONFIG` (freedo uses
+4096). The ESP builds plaintext payloads and uses CCM* for **decryption /
+validation only**.
 
 ### 3.6 Radio duty cycle
 868.0-868.6 MHz is an ETSI EN 300 220 sub-band with a 1 % duty-cycle limit
 without LBT+AFA (confirm the exact band rules), and freedo found LBT broke
 delivery on air. 1 % = 36 s/hour of TX; a full 1.003 s wake-up train is ~1 s,
 so long trains are a scarce budget shared across all devices. The firmware
-enforces an **airtime limiter** and the brain plans traffic against it (prefer
+enforces an **airtime limiter** and the ESP plans traffic against it (prefer
 short trains for synchronised devices, batch writes).
+
+### 3.7 MQTT interface
+A first sketch; fixed in M2/M3. Home Assistant controls **rooms (zones, 3.8)**,
+not single valves.
+
+- **Discovery:** for each zone, a retained config message on
+  `homeassistant/climate/tado_zone_<n>/config`: one climate entity per room.
+  Each device also gets sensors (battery, signal, its own temperature, valve
+  opening). Devices and zones appear at runtime, so discovery messages are
+  published and removed as they come and go.
+- **Zone state (retained):** `tado/zone/<n>/state`, JSON, e.g.
+  `{"temperature": 20.4, "setpoint": 21.0, "demand": 35}`. The temperature is
+  the zone's measure (3.8), and every value is what the devices reported, never
+  what was asked for, so Home Assistant shows the true state.
+- **Device state (retained):** `tado/device/<serial>/state`, e.g.
+  `{"temperature": 20.9, "battery": "ok", "rssi": -71, "last_seen": "…"}`.
+- **Commands (not retained):** `tado/zone/<n>/setpoint/set` with a number in °C.
+  The gateway writes the zone's writer (3.8). Devices sleep between CSL
+  wake-ups, so a write is queued, sent in the device's next window, and
+  confirmed by the next report. A command that cannot be delivered within an
+  expiry time is dropped and logged.
+- **Gateway:** `tado/gateway/status` online/offline (MQTT last will),
+  `tado/gateway/pair/set` opens a pair window, `tado/gateway/log` carries
+  warnings and the CC1312 `LOG` lines.
+
+Schedules and away mode stay in Home Assistant for now (automations writing
+zone setpoints). Which tado features the gateway exposes beyond that is decided
+after M3.
+
+### 3.8 Zones (rooms) and the boiler
+The devices regulate the rooms and the boiler themselves; the coordinator
+**configures** that and **relays** the traffic between them. Everything here is
+from freedo's `docs/PROTOCOL.md` (firmware reading plus one plant), not yet
+from our own captures.
+
+- **A zone is a document the coordinator serves**, `h/<home>/z/<n>/config`
+  (about 300 bytes, sent block-wise): its kind (heating or hot water), its
+  members, its **owner** (the measuring endpoint), the circuit it belongs to,
+  and the controller gains. Each device learns its zone and role from tag
+  `015e` in its own `d/config`.
+- **The owner measures and decides.** In a room with a wall thermostat, the
+  thermostat is the natural owner: its temperature is the room's temperature.
+  In a room with only valves, one valve is elected. The owner runs a PI(D)
+  controller on its temperature against the zone setpoint and publishes a heat
+  demand (0-100 %). The other valves in the zone follow the owner's measure and
+  demand, so two valves in one room open together on the thermostat's reading.
+- **The boiler is the wall thermostat's job.** It is the heat source of the
+  circuit: it observes each zone owner's demand, takes the maximum over the
+  zones of its circuit, and drives the boiler. The coordinator never writes a
+  boiler setpoint; it only binds each heating zone to the thermostat's circuit
+  in the zone document. (freedo can also cap the flow temperature; later, if
+  wanted.) The thermostat also carries the hot water zone.
+- **Devices do not talk directly.** Every device sleeps between CSL windows, so
+  zone traffic (measures, demand, setpoint echoes) goes through the coordinator,
+  which forwards each message byte for byte into the recipient's next window.
+- **Setpoints go to one device per zone**, the zone's writer: the owner where
+  there is one. The others take the new setpoint from its echo.
+- **Gateway state:** a zone table in NVS (number, name, kind, members, owner).
+  A device is put in a zone when it is paired (the pair command carries the
+  zone) and can be moved later over MQTT. The owner is chosen automatically:
+  the thermostat if the zone has one, else a valve.
+- **Later option:** the coordinator as owner of a zone, regulating on a
+  temperature sensor from Home Assistant. freedo does this; it adds a
+  controller on the gateway.
+- **Wanted, to test (M5): rooms that heat only while the boiler already
+  runs.** No command sets a valve's opening directly; a valve opens from its
+  zone's demand. Two ways to keep a room's demand away from the boiler, both
+  untested on any device:
+  1. Leave the zone out of the boiler circuit (no tag `6060` in its zone
+     document). Its valves still regulate to their setpoint, but freedo reads
+     the thermostat firmware as sending such a zone's demand to a circuit
+     nobody serves.
+  2. The coordinator as zone owner (above), sending the valves one demand and
+     the thermostat 0 %.
+
+  The gateway sees whether the boiler runs from the thermostat's reports
+  (`c/1/act`, `hvac/mon`), so it can also open such rooms only then.
+
+Consequence: the wall thermostat matters for every room, because the boiler
+only fires on its demand. Its pairing is not verified anywhere yet (M-1 check
+before M4).
 
 ## 4. Components
 
@@ -150,43 +241,45 @@ short trains for synchronised devices, batch writes).
   radio timer). PHY params, from freedo's working CC1101 register set
   (`cc1101/cc1101.go`): ~868.3 MHz (freedo: channel 26 = 868.324 MHz),
   50 kbps 2-GFSK, 25 kHz deviation, sync word `0xD391` on air, **1-byte length
-  field**, no whitening, CC1101-style hardware CRC-16. (Earlier notes said
-  "sync `0x91D3` + 2-byte 802.15.4g PHR"; that was the second sync byte read as
-  a PHR byte.)
+  field**, no whitening, CC1101-style hardware CRC-16.
 - MAC: 802.15.4-2015 framing, seq + frame counters (3.5), dedup, Enhanced-ACK
   (unsecured, 29 bytes with CSL IE and software FCS, 0-1 ms after RX ends),
   Enhanced Beacon answer to Beacon Requests (2.4-7.4 ms, no train).
 - CSL: wake-up rendezvous trains; timed TX into each device's wake window.
 - Crypto: AES-CCM* (MIC-32, L=2, B0 flags 0x49, nonce = MAC[0:13], aad =
-  MAC[0:16]), on the hardware AES engine. Verify against freedo's `tado/ccm.go`
-  and pairing-key-secured frames from our own captures. Keys pushed from host,
-  persisted in flash.
-- Autonomy: state cache + keepalive (3.2); airtime limiter (3.6).
-- Host link: the framed, encrypted protocol (3.3, 3.4) over UART.
+  MAC[0:16]), on the hardware AES engine. Keys come from the ESP in `CONFIG`
+  and are held in RAM.
+- Autonomy: Enhanced-ACKs and the RA keepalive while the ESP is away (3.2);
+  airtime limiter (3.6).
+- Host link: the framed protocol (3.4) over UART.
 
-### 4.2 ESP32 bridge — the wire (C / ESPHome)
-- Transparent UART<->TCP at 460800 baud, auto-reconnect. No TLS needed — the
-  payload is already encrypted end-to-end (3.3).
-- Zero protocol logic; it moves bytes. Options: ESPHome stream-server, a small
-  ESP-IDF sketch, or (more robust alternative) a tiny Linux box at the radio spot
-  running `ser2net` — which could even host the container and remove the lossy
-  link entirely.
-- **Remote CC1312 flashing:** wire ESP GPIOs to the CC1312 `RESET_N` and the ROM
-  bootloader backdoor pin, so the CC1312 can be reflashed over the network via
-  its UART serial bootloader (cc2538-bsl protocol). Plus ESP OTA for the bridge
-  itself.
+### 4.2 ESP32 gateway — the brain (C, ESP-IDF)
+- Host link client over UART2 at 460800 baud; resets the CC1312 through its
+  `RESET_N` (wiring: [`WIRING.md`](WIRING.md)).
+- 6LoWPAN, CoAP (CON/ACK, block-wise where the devices use it), CCM*
+  **decrypt/validate only** (3.5). The portable C core of `firmware/src`
+  (`crc`, `ccm`, `mac`) is shared, not rewritten.
+- The tado resource model: `d/pair`, `auth/token`, `time`,
+  `d/<serial>/config`, zone documents and zone reads, device reports and
+  setpoint writes, and relaying zone traffic between devices (3.8).
+- Coordinator logic: pair window, **network-key generation** (hardware RNG),
+  device table and counter floor in NVS, per-device downlink queue,
+  airtime-aware scheduling (3.6).
+- SNTP for wall-clock time (`time` answers).
+- MQTT client (ESP-IDF `esp-mqtt`) with Home Assistant discovery (3.7).
+- OTA updates over WiFi. Updating the CC1312 from the ESP (the ESP speaking
+  the ROM bootloader protocol itself) is optional and depends on the wiring
+  check in [`WIRING.md`](WIRING.md); otherwise the CC1312 is reflashed by hand
+  over USB.
+- Why ESP-IDF and not ESPHome: devices join at runtime, while ESPHome defines
+  its entities at compile time; the protocol code is C either way, and plain
+  ESP-IDF keeps it testable on the Mac.
 
-### 4.3 Java daemon — the brain (containerised)
-- CoAP (RFC 7252): **Eclipse Californium** (CON/ACK, block-wise).
-- 6LoWPAN frag/reasm, MAC state mirror, CCM* **decrypt/validate only** (3.5),
-  the tado resource model: `d/pair`, `auth/token`, `time`, `d/<serial>/config`,
-  zone configs, resources.
-- Coordinator logic: pair window, **network-key generation**, device DB,
-  zones/schedules, persistence, airtime-aware scheduling (3.6).
-- Serial client (jSerialComm for a USB-attached CC1312; TCP for the ESP bridge)
-  implementing the framed protocol with reconnect tolerance.
-- HTTP API for Home Assistant + a UI (later).
-- freedo's `tado/` replayed as golden fixtures (see M1 on oracle mismatches).
+### 4.3 Java bench tool (`host/`)
+- Runs M-1 on a Mac with the CC1312 on USB: pair window, `d/pair` with our
+  key, `auth/token`, `time`, a host-link capture file and CC1312 stats.
+- Its tested CoAP / 6LoWPAN / join code is the reference for the C port on the
+  ESP. Not extended beyond M-1, and not deployed.
 
 ## 5. Milestones (each is a go/no-go gate)
 
@@ -198,8 +291,8 @@ spec in [`JOIN.md`](JOIN.md) steps 1-7: button long-press (~2 min
 commissioning window), answer its Enhanced Beacon Request (2.4-7.4 ms, no
 train), answer its Router Solicitation with the doubled Router Advertisement,
 send `d/pair` with our own tag-`0x12` network key behind a full 254-frame
-wake-up train, and see the valve answer `2.04` under the new key. USB-attached
-CC1312; this is a thesis test, not a stack.
+wake-up train, and see the valve answer `2.04` under the new key. CC1312 on
+USB, driven by the Java bench tool; this is a thesis test, not a stack.
 
 Firmware needed: RX + TX on the PHY, CCM*, the on-chip beacon answer, and
 full-length wake-up trains. Not needed: the 0-1 ms Enhanced-ACK (a missed ACK
@@ -224,44 +317,53 @@ The timing M-1 could skip:
 these windows (ESP32 + CC1101), so this is expected to pass; if it does not,
 reconsider an ESP32+CC1101 radio (freedo's path).
 
-### M1 — Clean-room protocol harness  *(no radio; parallel)*
-Replay freedo `testdata` + our own captures through the Java decoder / CoAP /
-CCM* and match freedo's parsing. freedo is an oracle, not ground truth: a
-mismatch is investigated against raw captures, not auto-fixed to match.
+### M1 — Gateway protocol core  *(no radio; parallel)*
+The ESP gateway's protocol code in C (6LoWPAN, CoAP, tado resources, report
+decoding), built and tested on the Mac like `firmware/`'s `make test`. Replay
+freedo `testdata` + our own captures through it and match freedo's parsing.
+freedo is an oracle, not ground truth: a mismatch is investigated against raw
+captures, not auto-fixed to match.
 
-### M2 — First join, end to end  *(CC1312 over USB)*
-With one button-reset valve and the CC1312 on USB to the daemon (jSerialComm),
-using the framed protocol: the full [`JOIN.md`](JOIN.md) sequence, steps 1-12 —
-`d/pair` with a daemon-generated network key, then `auth/token`, RA, `time`,
-`d/<serial>/config` — until the device reports temperature. No ESP/WiFi and no
-autonomy layer yet.
+### M2 — First join, end to end, on the ESP
+CC1312 wired to the ESP32 (UART + reset). The full [`JOIN.md`](JOIN.md)
+sequence, steps 1-12, driven by the gateway — `d/pair` with an ESP-generated
+network key, then `auth/token`, RA, `time`, `d/<serial>/config` — until the
+device reports temperature and the reading appears on MQTT and in Home
+Assistant.
 
-**Gate:** a valve joins *our* coordinator and sends a decodable report through
-the Java stack.
+**Gate:** a valve joins the gateway and its temperature shows up in Home
+Assistant.
 
 ### M3 — Control writes
-Setpoint, boost, home/away to a valve; verify via its reports.
+One zone with one valve: a setpoint from Home Assistant over MQTT reaches the
+valve in its CSL window and is confirmed by its next report. Then boost and
+home/away.
 
-### M3.5 — Transport bridge
-CC1312 <-> ESP32 <-> TCP <-> Java daemon with the framed, encrypted,
-reconnect-tolerant protocol. Prove a decoded frame reaches the brain and a
-command returns, **across a forced WiFi drop**. Remote CC1312 reflash via the
-ESP works.
+### M3.5 — Outages
+Prove the failure domains of 3.2 on a joined valve: WiFi and broker drops, an
+ESP OTA update and an ESP reset while the valve stays joined, and the ESP
+resetting a hung CC1312. Settle remote CC1312 updates (wiring check in
+[`WIRING.md`](WIRING.md)) or document the manual route.
 
-### M4 — Scale + robustness
-Multi-device, wall thermostat (after its M-1 check) + hot water, schedules,
-persistence, frame-counter persistence across CC1312 reboot (3.5), autonomy
-layer and brain-outage survival (3.2), airtime budget under realistic load
-(3.6).
+### M4 — Rooms, boiler, scale
+The wall thermostat (after its M-1 check). One room with the thermostat and two
+valves: the valves follow the thermostat's measure, and a zone's demand fires
+the boiler through the thermostat (3.8). Then all rooms, hot water,
+persistence across power loss (3.2), frame-counter floor across reboots (3.5),
+airtime budget under realistic load (3.6).
 
-### M5 — Integration  *(optional / later)*
-HTTP API + Home Assistant. Shortcut: if the API mirrors freedo, point freedo's
-existing HA integration at it.
+### M5 — Home Assistant polish  *(optional / later)*
+Pairing and device removal from Home Assistant, more device features (battery,
+window state, child lock), whether schedules should move into the gateway, and
+rooms that heat only while the boiler runs (3.8).
 
 ## 6. Testing strategy
-- **Golden fixtures** from freedo `testdata` + our captures; CCM* test vectors.
-- **Unit tests** for CoAP / 6LoWPAN / MAC / CCM* in Java against those fixtures.
-- **Fake CC1312** link endpoint for daemon tests (reconnects, drops, resync).
+- **Golden fixtures** from freedo `testdata` + our captures; CCM* test vectors
+  (`golden/vectors.txt`, shared by the C and Java tests).
+- **Unit tests** for the C protocol core (CoAP / 6LoWPAN / MAC / CCM*) built
+  natively on the Mac, against those fixtures.
+- **Fake CC1312** host-link endpoint for gateway tests (resets, resync,
+  timeouts).
 - **Firmware timing** measured via RAT logs / logic analyser, not assumed.
 - **HIL**: one spare valve on the bench from M-1 onward.
 
@@ -279,12 +381,11 @@ existing HA integration at it.
   fuse/read-out locks.
 
 ## 8. Defaults (change only with a reason)
-- Bridge: ESPHome stream-server first; a tiny Linux `ser2net` box if the WiFi
-  link proves lossy.
-- Java: Maven (with wrapper), Java 25, a distroless/temurin JRE base image.
-- Persistence: SQLite for the device DB + schedules.
-- The brain keeps no extra cache beyond what the CC1312 autonomy layer (3.2)
-  requires; revisit after M4.
+- Gateway: ESP32 (WROOM, 4 MB flash), ESP-IDF, C.
+- MQTT: Mosquitto (the Home Assistant add-on), Home Assistant MQTT discovery,
+  no TLS, broker username and password.
+- Persistence: ESP NVS for the network key, counter floor and device table.
+- Bench tool: Java 25, Maven (with wrapper).
 
 ## 9. Heritage / cross-references
 - `CappyT/freedo` (Apache-2.0) — ESP32+CC1101 reimplementation; behavioural

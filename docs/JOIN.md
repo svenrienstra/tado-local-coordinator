@@ -36,10 +36,11 @@ File references below are relative to `reference/freedo/`.
   allocation and CCM* sealing of every outgoing frame, the pair-window key
   fallback (accept frames that fail the network key but verify under the
   pairing key, and tag that sender as "pairing key").
-- **Host (Java, not timed):** network-key generation, the RA payload, the
-  `d/pair`, `auth/token` and `time` CoAP payloads, the device DB. The host sends
-  plaintext + destination + key selector down; the CC1312 seals and schedules.
-  `time` must arrive within 5 s (step 10), well within a USB or LAN round trip.
+- **Host (not timed; the Java bench tool for M-1, the ESP32 gateway from M2):**
+  network-key generation, the RA payload, the `d/pair`, `auth/token` and `time`
+  CoAP payloads, the device DB. The host sends plaintext + destination + key
+  selector down; the CC1312 seals and schedules. `time` must arrive within 5 s
+  (step 10), well within a UART round trip.
 
 ## Sequence
 
