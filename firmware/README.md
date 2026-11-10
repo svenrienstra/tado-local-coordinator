@@ -37,10 +37,9 @@ the tests reproduce each frame byte for byte.
 - **Debugger (XDS110 probe on the board's 10-pin JTAG header):** `make flash` erases, programs,
   verifies and then pin-resets, using UniFlash's DSLite binary (`brew install
   --cask uniflash`, which needs Rosetta; found under `/Applications/TI/UniFlash`,
-  override with `DSLITE=...`;
-  `CCXML=<your CC1312R1F3 target config>`; UniFlash writes the `.ccxml` when you
-  pick "CC1312R1F3" + "Texas Instruments XDS110 USB Debug Probe" and save the
-  configuration).
+  override with `DSLITE=...`). The target config is `CC1312R1F3.ccxml` in this
+  directory (override with `CCXML=...`): CC1312R1F3 on an XDS110 USB Debug
+  Probe, 2-pin cJTAG, with the probe supplying 3.3 V to the target.
 - **ROM serial bootloader:** the CCFG keeps the bootloader enabled, but the
   backdoor pin is off by default because the board's pin pull-ups are not
   known yet. `make clean all BL_PIN=<dio>` turns it on (active low). Then hold
