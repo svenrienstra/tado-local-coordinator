@@ -3,6 +3,7 @@
 
 #include <ti/devices/DeviceFamily.h>
 #include DeviceFamily_constructPath(driverlib/aes.h)
+#include DeviceFamily_constructPath(driverlib/interrupt.h)
 #include <ti/drivers/Power.h>
 #include <ti/drivers/power/PowerCC26X2.h>
 
@@ -25,6 +26,9 @@ void aes128_encrypt_block(const uint8_t key[16], const uint8_t in[16], uint8_t o
     if (!key_valid || memcmp(key, loaded_key, 16) != 0) {
         memcpy(loaded_key, key, 16);
         AESWriteToKeyStore(loaded_key, AES_128_KEY_LENGTH_BYTES, AES_KEY_AREA_0);
+        /* The key-store write enables the crypto IRQ in the NVIC; we poll and
+         * have no handler for it. */
+        IntDisable(INT_CRYPTO_RESULT_AVAIL_IRQ);
         key_valid = true;
     }
     memcpy(buf_in, in, 16);

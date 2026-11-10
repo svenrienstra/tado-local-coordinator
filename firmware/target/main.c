@@ -1,8 +1,12 @@
 /* CC1312R1 coordinator: one main loop, no RTOS. */
 #include <stdint.h>
+#include <string.h>
 
 #include <NoRTOS.h>
 #include <ti/devices/DeviceFamily.h>
+#include DeviceFamily_constructPath(inc/hw_ints.h)
+#include DeviceFamily_constructPath(inc/hw_nvic.h)
+#include DeviceFamily_constructPath(inc/hw_types.h)
 #include DeviceFamily_constructPath(driverlib/aon_rtc.h)
 #include DeviceFamily_constructPath(driverlib/sys_ctrl.h)
 #include <ti/drivers/Power.h>
@@ -11,6 +15,26 @@
 #include "platform.h"
 
 static struct coordinator coord;
+
+static void unhandled_irq(void)
+{
+    for (;;) {
+    }
+}
+
+/* The NoRTOS startup's flash table holds only the 16 system vectors, but
+ * driverlib's IntRegister seeds its RAM table with NUM_INTERRUPTS entries
+ * copied from VTOR on the first HwiP_create: the peripheral entries would be
+ * code bytes, and an IRQ without a handler would jump into them. Point VTOR
+ * at a complete table first, so such an IRQ stops in unhandled_irq. */
+static void vectors_init(void)
+{
+    static uint32_t table[NUM_INTERRUPTS] __attribute__((aligned(256)));
+    memcpy(table, (const void *)HWREG(NVIC_VTABLE), 16 * sizeof table[0]);
+    for (unsigned i = 16; i < NUM_INTERRUPTS; i++)
+        table[i] = (uint32_t)unhandled_irq;
+    HWREG(NVIC_VTABLE) = (uint32_t)table;
+}
 
 uint32_t platform_ms(void)
 {
@@ -37,6 +61,7 @@ static const char *reset_reason(void)
 
 int main(void)
 {
+    vectors_init();
     Power_init();
     NoRTOS_start();
     uart_init();
