@@ -6,10 +6,12 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -24,6 +26,7 @@ import tadocoord.link.Radio.TxRequest;
 import tadocoord.lowpan.Datagram;
 import tadocoord.lowpan.Ipv6;
 import tadocoord.lowpan.Reassembler;
+import tadocoord.tado.ConfigDocuments;
 import tadocoord.tado.TadoResources;
 
 /**
@@ -59,6 +62,7 @@ public final class JoinSession {
     private static final int ICMP_ROUTER_SOLICITATION = 133;
     private static final int PUT = CoapMessage.code(0, 3);
     private static final int POST = CoapMessage.code(0, 2);
+    private static final int GET = CoapMessage.code(0, 1);
     private static final byte[] NO_IPV4 = new byte[4];
 
     /** SERVING: no pair window; serves the devices already on the network. */
@@ -71,6 +75,7 @@ public final class JoinSession {
     private final RandomGenerator rng;
     private final Consumer<String> progress;
     private final Reassembler reassembler = new Reassembler();
+    private Installation installation = Installation.NONE;
     /** Our answer to each recent request, for its repeats. */
     private final Map<Exchange, Answer> answers = new HashMap<>();
 
@@ -113,6 +118,12 @@ public final class JoinSession {
         this.progress = progress;
         this.nextMid = rng.nextInt(0x10000);
         scheduleNextRa();
+    }
+
+    /** Serves the devices of {@code i} their configuration and zone documents. */
+    public JoinSession installation(Installation i) {
+        this.installation = i;
+        return this;
     }
 
     /** A session with no pair window: it only keeps the joined devices served. */
@@ -242,7 +253,12 @@ public final class JoinSession {
             }
             return;
         }
-        if (m.type() == CoapMessage.Type.CON && (path.equals("auth/token") || path.equals("auth/key"))) {
+        Optional<byte[]> document = m.type() == CoapMessage.Type.CON && m.code() == GET
+                ? documentFor(rx.src(), path) : Optional.empty();
+        if (document.isPresent()) {
+            progress.accept("GET %s from %s, block %s".formatted(path, rx.src(), blockOf(m)));
+            answer(exchange, ConfigDocuments.blockAnswer(m, document.get(), d, coordinator, rx.src()));
+        } else if (m.type() == CoapMessage.Type.CON && (path.equals("auth/token") || path.equals("auth/key"))) {
             progress.accept(path + " from " + rx.src() + ", answering with a session");
             answer(exchange, TadoResources.authTokenAnswer(m, sessionId(rx.src()), d, coordinator, rx.src()));
         } else if (m.type() == CoapMessage.Type.CON && path.equals("time")) {
@@ -284,6 +300,35 @@ public final class JoinSession {
             progress.accept("d/pair answered " + CoapMessage.codeString(m.code()));
             state = State.FAILED;
         }
+    }
+
+    /**
+     * The configuration ({@code d/<serial>/config}) or zone document ({@code
+     * h/<home>/z/<n>/config}) for a device of the installation; empty for anything else.
+     */
+    private Optional<byte[]> documentFor(Eui device, String path) {
+        String[] s = path.split("/");
+        if (s.length == 3 && s[0].equals("d") && s[2].equals("config")) {
+            List<ConfigDocuments.ZoneRole> roles = new ArrayList<>();
+            installation.zoneOwners().forEach((zone, owner) -> {
+                if (owner.equals(device)) {
+                    roles.add(new ConfigDocuments.ZoneRole(ConfigDocuments.ROLE_OWNER, zone));
+                }
+            });
+            return roles.isEmpty() ? Optional.empty()
+                    : Optional.of(ConfigDocuments.deviceConfig(installation.homeId(), roles));
+        }
+        if (s.length == 5 && s[0].equals("h") && s[1].equals(Long.toString(installation.homeId()))
+                && s[2].equals("z") && s[4].equals("config")) {
+            Eui owner = installation.zoneOwners().get(Integer.parseInt(s[3]));
+            return owner == null ? Optional.empty() : Optional.of(ConfigDocuments.zoneWithOwner(owner));
+        }
+        return Optional.empty();
+    }
+
+    private static String blockOf(CoapMessage m) {
+        return m.options().stream().filter(o -> o.number() == 23).findFirst()
+                .map(o -> HexFormat.of().formatHex(o.value())).orElse("-");
     }
 
     /** Sends an answer on the device's sample and keeps it for the request's repeats. */

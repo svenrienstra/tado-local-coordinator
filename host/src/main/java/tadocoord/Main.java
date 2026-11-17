@@ -16,11 +16,14 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.TreeMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import tadocoord.join.Installation;
 import tadocoord.join.JoinSession;
 import tadocoord.link.Event;
 import tadocoord.link.HostLink;
@@ -61,23 +64,29 @@ public final class Main {
         Path stateDir = Path.of("state");
         int window = 120;
         Integer channelKhz = null; // the tuned one from state/, else CHANNEL_KHZ
+        Map<Integer, Eui> zones = new TreeMap<>();
         for (int i = 1; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--port" -> port = args[i + 1];
                 case "--state" -> stateDir = Path.of(args[i + 1]);
                 case "--window" -> window = Integer.parseInt(args[i + 1]);
                 case "--channel" -> channelKhz = Integer.parseInt(args[i + 1]);
+                case "--zone" -> {
+                    String[] z = args[i + 1].split("=");
+                    zones.put(Integer.parseInt(z[0]), Eui.ofHex(z[1]));
+                }
                 default -> usage();
             }
         }
         if (port == null || (args[0].equals("join") && window <= 0)) {
             usage();
         }
-        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz));
+        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz, zones));
     }
 
     /** With windowSeconds 0, serves without a pair window until stopped. */
-    private static int run(String port, Path stateDir, int windowSeconds, Integer channelOverride) throws Exception {
+    private static int run(String port, Path stateDir, int windowSeconds, Integer channelOverride,
+            Map<Integer, Eui> zones) throws Exception {
         Path identityFile = stateDir.resolve("coordinator.properties");
         Identity id = Identity.loadOrCreate(identityFile,
                 windowSeconds == 0 ? SERVE_COUNTER_BLOCK : COUNTER_BLOCK);
@@ -96,8 +105,8 @@ public final class Main {
 
             if (windowSeconds == 0) {
                 JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
-                        new SecureRandom(), Main::log);
-                log("serving the joined devices; stop with Ctrl-C");
+                        new SecureRandom(), Main::log).installation(new Installation(id.homeId, zones));
+                log("serving the joined devices (home " + id.homeId + ", zones " + zones + "); stop with Ctrl-C");
                 runWindow(link, session, events, Instant.MAX, identityFile);
                 return 0;
             }
@@ -119,7 +128,7 @@ public final class Main {
      * Coordinator EUI, network key, counter floor and the carrier the CC1312 last tuned to,
      * persisted across runs.
      */
-    public record Identity(Eui eui, byte[] networkKey, long counterFloor, int channelKhz) {
+    public record Identity(Eui eui, byte[] networkKey, long counterFloor, int channelKhz, long homeId) {
         public static Identity loadOrCreate(Path file) throws IOException {
             return loadOrCreate(file, COUNTER_BLOCK);
         }
@@ -139,9 +148,14 @@ public final class Main {
                 p.setProperty("network_key", Hex.of(key));
                 p.setProperty("counter_floor", "1");
             }
+            if (p.getProperty("home_id") == null) {
+                // The home in every h/<home>/... path a device uses; never 0.
+                p.setProperty("home_id", Long.toString(1 + new SecureRandom().nextInt(Integer.MAX_VALUE - 1)));
+            }
             Identity id = new Identity(Eui.ofHex(p.getProperty("coordinator_eui")),
                     Hex.parse(p.getProperty("network_key")), Long.parseLong(p.getProperty("counter_floor")),
-                    Integer.parseInt(p.getProperty("channel_khz", Integer.toString(CHANNEL_KHZ))));
+                    Integer.parseInt(p.getProperty("channel_khz", Integer.toString(CHANNEL_KHZ))),
+                    Long.parseLong(p.getProperty("home_id")));
             // Reserve this run's block before the first frame goes out.
             p.setProperty("counter_floor", Long.toString(id.counterFloor + block));
             store(file, p);
@@ -252,7 +266,7 @@ public final class Main {
 
     private static void usage() {
         System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>] [--channel <kHz>]");
-        System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>]");
+        System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>] [--zone <n>=<owner EUI>]...");
         System.exit(2);
     }
 }

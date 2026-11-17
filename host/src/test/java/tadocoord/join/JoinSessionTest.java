@@ -261,6 +261,35 @@ class JoinSessionTest {
     }
 
     @Test
+    void servesTheInstallationsDevicesTheirConfigAndZoneDocument() throws Exception {
+        JoinSession serving = JoinSession.serving(coordinator, networkKey, radio, clock, new SplittableRandom(1),
+                msg -> { }).installation(new Installation(4242, java.util.Map.of(11, joiner)));
+        serving.onEvent(fromJoiner(false, get(0x0201, "d", "VA0000000001", "config")));
+        CoapMessage config = coap(sent.get(0));
+        assertEquals(CoapMessage.code(2, 5), config.code());
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.deviceConfig(4242,
+                List.of(new tadocoord.tado.ConfigDocuments.ZoneRole(0x0d, 11))), config.payload());
+
+        serving.onEvent(fromJoiner(false, get(0x0202, "h", "4242", "z", "11", "config")));
+        CoapMessage zone = coap(sent.get(1));
+        assertEquals(CoapMessage.code(2, 5), zone.code());
+        assertEquals(64, zone.payload().length); // block 0 of a longer document
+
+        serving.onEvent(fromJoiner(false, get(0x0203, "h", "4242", "z", "12", "config")));
+        serving.onEvent(fromJoiner(false, get(0x0204, "h", "1", "z", "11", "config")));
+        assertEquals(2, sent.size()); // no zone 12, no home 1: not ours to answer
+    }
+
+    private static CoapMessage get(int mid, String... path) {
+        List<CoapMessage.Option> options = new java.util.ArrayList<>();
+        for (String p : path) {
+            options.add(CoapMessage.path(p));
+        }
+        options.add(new CoapMessage.Option(23, new byte[] {0x03})); // Block2 0/0/128
+        return new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 1), mid, new byte[0], options, new byte[0]);
+    }
+
+    @Test
     void answersAFragmentedReportWith204() throws Exception {
         CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa302, new byte[] {7},
                 List.of(CoapMessage.path("d"), CoapMessage.path("SU0000000001"), CoapMessage.path("fw"),
