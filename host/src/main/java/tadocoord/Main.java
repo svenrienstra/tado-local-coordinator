@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import tadocoord.join.JoinSession;
 import tadocoord.link.Event;
 import tadocoord.link.HostLink;
@@ -58,7 +60,7 @@ public final class Main {
         String port = null;
         Path stateDir = Path.of("state");
         int window = 120;
-        int channelKhz = CHANNEL_KHZ;
+        Integer channelKhz = null; // the tuned one from state/, else CHANNEL_KHZ
         for (int i = 1; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--port" -> port = args[i + 1];
@@ -75,8 +77,9 @@ public final class Main {
     }
 
     /** With windowSeconds 0, serves without a pair window until stopped. */
-    private static int run(String port, Path stateDir, int windowSeconds, int channelKhz) throws Exception {
-        Identity id = Identity.loadOrCreate(stateDir.resolve("coordinator.properties"),
+    private static int run(String port, Path stateDir, int windowSeconds, Integer channelOverride) throws Exception {
+        Path identityFile = stateDir.resolve("coordinator.properties");
+        Identity id = Identity.loadOrCreate(identityFile,
                 windowSeconds == 0 ? SERVE_COUNTER_BLOCK : COUNTER_BLOCK);
         log("coordinator " + id.eui + ", counter floor " + id.counterFloor);
 
@@ -87,13 +90,15 @@ public final class Main {
                 HostLink link = new HostLink(new SerialTransport(port), events::add, tap)) {
             HostLink.Pong pong = link.ping();
             log("firmware v" + pong.firmwareVersion());
+            int channelKhz = channelOverride != null ? channelOverride : id.channelKhz;
+            log("carrier " + channelKhz + " kHz");
             link.configure(id.eui, id.networkKey, id.counterFloor, channelKhz);
 
             if (windowSeconds == 0) {
                 JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
                         new SecureRandom(), Main::log);
                 log("serving the joined devices; stop with Ctrl-C");
-                runWindow(link, session, events, Instant.MAX);
+                runWindow(link, session, events, Instant.MAX, identityFile);
                 return 0;
             }
             JoinSession session = new JoinSession(id.eui, id.networkKey, link, Clock.systemUTC(),
@@ -101,7 +106,7 @@ public final class Main {
             link.pairWindow(windowSeconds);
             log("pair window open for " + windowSeconds + " s: long-press the device button now");
             try {
-                runWindow(link, session, events, Instant.now().plusSeconds(windowSeconds));
+                runWindow(link, session, events, Instant.now().plusSeconds(windowSeconds), identityFile);
             } finally {
                 closeWindow(link);
             }
@@ -110,7 +115,11 @@ public final class Main {
     }
 
     /** Coordinator EUI, network key and counter floor, persisted across runs. */
-    public record Identity(Eui eui, byte[] networkKey, long counterFloor) {
+    /**
+     * Coordinator EUI, network key, counter floor and the carrier the CC1312 last tuned to,
+     * persisted across runs.
+     */
+    public record Identity(Eui eui, byte[] networkKey, long counterFloor, int channelKhz) {
         public static Identity loadOrCreate(Path file) throws IOException {
             return loadOrCreate(file, COUNTER_BLOCK);
         }
@@ -131,9 +140,25 @@ public final class Main {
                 p.setProperty("counter_floor", "1");
             }
             Identity id = new Identity(Eui.ofHex(p.getProperty("coordinator_eui")),
-                    Hex.parse(p.getProperty("network_key")), Long.parseLong(p.getProperty("counter_floor")));
+                    Hex.parse(p.getProperty("network_key")), Long.parseLong(p.getProperty("counter_floor")),
+                    Integer.parseInt(p.getProperty("channel_khz", Integer.toString(CHANNEL_KHZ))));
             // Reserve this run's block before the first frame goes out.
             p.setProperty("counter_floor", Long.toString(id.counterFloor + block));
+            store(file, p);
+            return id;
+        }
+
+        /** Keeps the carrier the CC1312 tuned to, so the next run starts on it. */
+        public static void saveChannel(Path file, int khz) throws IOException {
+            Properties p = new Properties();
+            try (InputStream in = Files.newInputStream(file)) {
+                p.load(in);
+            }
+            p.setProperty("channel_khz", Integer.toString(khz));
+            store(file, p);
+        }
+
+        private static void store(Path file, Properties p) throws IOException {
             // Owner-only from creation: the key must never sit in a readable file, even briefly.
             if (Files.notExists(file.getParent())) {
                 Files.createDirectories(file.getParent(), ownerOnly("rwx------"));
@@ -145,7 +170,6 @@ public final class Main {
                 p.store(out, "tado-coordinator identity: holds the network key, keep private");
             }
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            return id;
         }
 
         private static FileAttribute<?>[] ownerOnly(String perms) {
@@ -156,7 +180,7 @@ public final class Main {
     }
 
     private static void runWindow(HostLink link, JoinSession session, LinkedBlockingQueue<Event> events,
-            Instant end) throws IOException, InterruptedException {
+            Instant end, Path identityFile) throws IOException, InterruptedException {
         StatsDelta stats = new StatsDelta();
         boolean statsSupported = true;
         Instant nextStats = Instant.now();
@@ -169,6 +193,7 @@ public final class Main {
                 Event e = events.poll(250, TimeUnit.MILLISECONDS);
                 if (e != null) {
                     session.onEvent(e);
+                    keepRetune(e, identityFile);
                 }
                 session.tick();
             } catch (HostLink.LinkException e) {
@@ -178,6 +203,18 @@ public final class Main {
             if (session.state() == JoinSession.State.JOINED) {
                 // Stay a little longer to serve auth/token and time (M2 steps 8-10).
                 end = min(end, Instant.now().plusSeconds(30));
+            }
+        }
+    }
+
+    private static final Pattern RETUNED = Pattern.compile("retuned to (\\d+) kHz");
+
+    /** The CC1312 stores nothing: the carrier it followed is kept for the next CONFIG. */
+    private static void keepRetune(Event e, Path identityFile) throws IOException {
+        if (e instanceof Event.Log l) {
+            Matcher m = RETUNED.matcher(l.text());
+            if (m.find()) {
+                Identity.saveChannel(identityFile, Integer.parseInt(m.group(1)));
             }
         }
     }

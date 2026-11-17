@@ -26,4 +26,18 @@ class MainIdentityTest {
         assertArrayEquals(first.networkKey(), second.networkKey());
         assertEquals(first.counterFloor() + Main.COUNTER_BLOCK, second.counterFloor());
     }
+
+    @Test
+    void keepsTheCarrierTheRadioTunedToAcrossRuns(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("state/coordinator.properties");
+        Main.Identity first = Main.Identity.loadOrCreate(file);
+        assertEquals(Main.CHANNEL_KHZ, first.channelKhz());
+
+        Main.Identity.saveChannel(file, 868_340);
+        Main.Identity second = Main.Identity.loadOrCreate(file);
+
+        assertEquals(868_340, second.channelKhz());
+        assertArrayEquals(first.networkKey(), second.networkKey()); // the rest of the file is kept
+        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+    }
 }

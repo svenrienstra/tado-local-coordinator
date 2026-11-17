@@ -49,7 +49,9 @@ network key in `CONFIG` is redacted. The console also prints the CC1312's
 `LOG` lines and, every 5 s, the `STATS` counters that moved (e.g. a rising
 `rx_crc_fail` with no `rx_ok` means the PHY settings do not match the valves).
 
-`state/coordinator.properties` holds the coordinator EUI, the network key and
+`state/coordinator.properties` holds the coordinator EUI, the network key, the
+carrier the CC1312 last tuned to (`channel_khz`, sent in the next `CONFIG`;
+`--channel` overrides it) and
 the frame-counter floor (a block of 4096 is reserved per `join` run, 2^20 per
 `serve` run). It is created on
 first run with mode 600; keep it — a device joined with that key needs it.

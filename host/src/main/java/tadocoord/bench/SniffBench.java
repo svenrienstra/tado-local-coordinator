@@ -35,7 +35,7 @@ public final class SniffBench {
                     }
                 })) {
             link.ping();
-            link.configure(id.eui(), id.networkKey(), id.counterFloor(), Main.CHANNEL_KHZ);
+            link.configure(id.eui(), id.networkKey(), id.counterFloor(), id.channelKhz());
             Thread.sleep(Long.parseLong(args[2]) * 1000);
             System.out.println("stats " + Arrays.toString(link.stats()));
         }

@@ -76,7 +76,7 @@ public final class DeviceRequest {
         long t0 = System.nanoTime();
         try (HostLink link = new HostLink(new SerialTransport(args[0]), events::add)) {
             link.ping();
-            link.configure(id.eui(), id.networkKey(), id.counterFloor(), Main.CHANNEL_KHZ);
+            link.configure(id.eui(), id.networkKey(), id.counterFloor(), id.channelKhz());
             var accepted = link.tx(TxRequest.unicast(dev, TxRequest.TRAIN_ANCHORED,
                     Datagram.udp(id.eui(), dev, BRIDGE_PORT, Datagram.COAP_PORT, request.encode())));
             System.out.printf("sent %s %s MID %04x (%s)%n", args[2], args[3], mid, accepted);

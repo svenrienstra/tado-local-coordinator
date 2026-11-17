@@ -35,7 +35,7 @@ public final class ProbeBench {
             }
         })) {
             link.ping();
-            link.configure(id.eui(), id.networkKey(), id.counterFloor(), Main.CHANNEL_KHZ);
+            link.configure(id.eui(), id.networkKey(), id.counterFloor(), id.channelKhz());
             for (int i = 0; i < Integer.parseInt(args[2]); i++) {
                 CoapMessage get = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 1), 0x7000 + i,
                         new byte[] {(byte) i}, List.of(CoapMessage.path("d"), CoapMessage.path("fw"),
