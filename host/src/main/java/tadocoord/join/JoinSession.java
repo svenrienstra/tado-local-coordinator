@@ -58,6 +58,10 @@ public final class JoinSession {
      * retries a CON request 2-3 s apart, up to three times.
      */
     static final Duration ANSWER_LIFETIME = Duration.ofSeconds(60);
+    /** How long a zone state write waits for the device's ACK before going again (same MID). */
+    static final Duration ZONE_WRITE_TIMEOUT = Duration.ofSeconds(10);
+    /** RFC 7252 MAX_RETRANSMIT: the first write and up to four repeats. */
+    static final int ZONE_WRITE_ATTEMPTS = 5;
 
     private static final int ICMP_ROUTER_SOLICITATION = 133;
     private static final int PUT = CoapMessage.code(0, 3);
@@ -80,6 +84,17 @@ public final class JoinSession {
     private final Map<Exchange, Answer> answers = new HashMap<>();
 
     private record Exchange(Eui device, int mid) {}
+
+    /** A setpoint set on a zone's device, which the zone follows until {@code end}. */
+    private record Overlay(int setpoint, Instant end) {}
+
+    /** Per zone, the overlay its device reported; the device drops it when our state says none. */
+    private final Map<Integer, Overlay> overlays = new HashMap<>();
+
+    /** A zone state write to a device, by MID, until the device ACKs it. */
+    private final Map<Integer, ZoneWrite> zoneWrites = new HashMap<>();
+
+    private record ZoneWrite(int zone, Eui device, byte[] packet, Instant sent, int attempts) {}
 
     private static final class Answer {
         final byte[] packet;
@@ -160,6 +175,8 @@ public final class JoinSession {
             pairLeftRadio();
         }
         answers.values().removeIf(a -> !now.isBefore(a.at.plus(ANSWER_LIFETIME)));
+        endOverlays(now);
+        repeatZoneWrites(now);
         if (raHandle < 0 && !now.isBefore(nextRa) && raAllowed()) {
             sendRouterAdvert();
         }
@@ -242,6 +259,13 @@ public final class JoinSession {
         if (rx.pairingKey()) {
             return; // only d/pair's answer matters before the device holds our key
         }
+        if (m.type() == CoapMessage.Type.ACK && zoneWrites.containsKey(m.mid())
+                && zoneWrites.get(m.mid()).device().equals(rx.src())) {
+            ZoneWrite w = zoneWrites.remove(m.mid());
+            progress.accept("zone %d state write: %s from %s".formatted(w.zone(), CoapMessage.codeString(m.code()),
+                    rx.src()));
+            return;
+        }
         String path = m.path();
         Exchange exchange = new Exchange(rx.src(), m.mid());
         Answer earlier = m.type() == CoapMessage.Type.CON ? answers.get(exchange) : null;
@@ -268,6 +292,9 @@ public final class JoinSession {
             // Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries.
             progress.accept("%s %s from %s, answering 2.04: %s".formatted(CoapMessage.codeString(m.code()), path,
                     rx.src(), HexFormat.of().formatHex(m.payload())));
+            if (m.code() == PUT) {
+                onDeviceOverlay(rx.src(), path, m.payload());
+            }
             answer(exchange, TadoResources.changedAnswer(m, d, coordinator, rx.src()));
         } else {
             progress.accept("CoAP %s %s %s from %s (not handled yet)".formatted(
@@ -328,11 +355,101 @@ public final class JoinSession {
             }
             return switch (s[4]) {
                 case "config" -> Optional.of(ConfigDocuments.zoneWithOwner(owner));
-                case "s" -> Optional.of(ConfigDocuments.zoneState(installation.setpoint(zone)));
+                case "s" -> Optional.of(ConfigDocuments.zoneState(installation.setpoint(zone), overlay(zone)));
                 default -> Optional.empty();
             };
         }
         return Optional.empty();
+    }
+
+    /**
+     * {@code PUT h/<home>/z/<n>/overlay} from the zone's owner: a setpoint set on the device
+     * ({@code 6240} manual, {@code 6280} the setpoint), or {@code 6240}=0 when the device ended
+     * it. It carries no end: the zone keeps it for the installation's device overlay time.
+     */
+    private void onDeviceOverlay(Eui device, String path, byte[] body) {
+        String[] s = path.split("/");
+        if (s.length != 5 || !s[0].equals("h") || !s[1].equals(Long.toString(installation.homeId()))
+                || !s[2].equals("z") || !s[3].matches("\\d+") || !s[4].equals("overlay")) {
+            return;
+        }
+        int zone = Integer.parseInt(s[3]);
+        if (!device.equals(installation.zoneOwners().get(zone))) {
+            progress.accept("overlay on zone %d from %s, which does not own it: ignored".formatted(zone, device));
+            return;
+        }
+        Map<Integer, byte[]> tlvs;
+        try {
+            tlvs = ConfigDocuments.tlvs(body);
+        } catch (IllegalArgumentException e) {
+            progress.accept("overlay on zone %d: %s".formatted(zone, e.getMessage()));
+            return;
+        }
+        byte[] kind = tlvs.get(0x6240);
+        byte[] setpoint = tlvs.get(0x6280);
+        zoneWrites.values().removeIf(w -> w.zone() == zone); // the device's word is newer than ours
+        if (kind != null && ConfigDocuments.unsigned(kind) == 0) {
+            overlays.remove(zone);
+            progress.accept("zone %d: the device ended its overlay".formatted(zone));
+        } else if (setpoint != null) {
+            Duration d = installation.deviceOverlay();
+            Instant end = d.isZero() ? Instant.MAX : clock.instant().plus(d);
+            overlays.put(zone, new Overlay(ConfigDocuments.unsigned(setpoint), end));
+            progress.accept("zone %d: %s C set on the device, %s".formatted(zone,
+                    centiString(ConfigDocuments.unsigned(setpoint)),
+                    d.isZero() ? "until changed" : "until " + end));
+        }
+    }
+
+    /** The zone's running overlay setpoint, if any. */
+    private OptionalInt overlay(int zone) {
+        Overlay o = overlays.get(zone);
+        return o != null && clock.instant().isBefore(o.end()) ? OptionalInt.of(o.setpoint()) : OptionalInt.empty();
+    }
+
+    /** Ends each overlay whose time is up and tells its device, which would else hold it until its next read. */
+    private void endOverlays(Instant now) throws IOException {
+        List<Integer> ended = new ArrayList<>();
+        overlays.forEach((zone, o) -> {
+            if (!now.isBefore(o.end())) {
+                ended.add(zone);
+            }
+        });
+        for (int zone : ended) {
+            overlays.remove(zone);
+            progress.accept("zone %d: the device's overlay ran out, back to %s C".formatted(zone,
+                    centiString(installation.setpoint(zone))));
+            Eui owner = installation.zoneOwners().get(zone);
+            if (owner != null) {
+                int mid = nextMid++ & 0xffff;
+                byte[] packet = TadoResources.zoneStateWrite(zone,
+                        ConfigDocuments.zoneState(installation.setpoint(zone)), mid, coordinator, owner);
+                zoneWrites.put(mid, new ZoneWrite(zone, owner, packet, now, 1));
+                send(TxRequest.unicast(owner, TxRequest.TRAIN_ANCHORED, packet));
+            }
+        }
+    }
+
+    private void repeatZoneWrites(Instant now) throws IOException {
+        for (var it = zoneWrites.entrySet().iterator(); it.hasNext(); ) {
+            var e = it.next();
+            ZoneWrite w = e.getValue();
+            if (now.isBefore(w.sent().plus(ZONE_WRITE_TIMEOUT))) {
+                continue;
+            }
+            if (w.attempts() >= ZONE_WRITE_ATTEMPTS) {
+                progress.accept("zone %d state write: no ACK from %s after %d attempts; it reads the state again within 20 min"
+                        .formatted(w.zone(), w.device(), w.attempts()));
+                it.remove();
+                continue;
+            }
+            e.setValue(new ZoneWrite(w.zone(), w.device(), w.packet(), now, w.attempts() + 1));
+            send(TxRequest.unicast(w.device(), TxRequest.TRAIN_ANCHORED, w.packet()));
+        }
+    }
+
+    private static String centiString(int centi) {
+        return "%d.%02d".formatted(centi / 100, centi % 100);
     }
 
     private static String blockOf(CoapMessage m) {

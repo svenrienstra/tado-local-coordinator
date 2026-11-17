@@ -6,8 +6,11 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import tadocoord.Eui;
 import tadocoord.coap.CoapMessage;
 import tadocoord.coap.CoapMessage.Option;
@@ -32,6 +35,8 @@ public final class ConfigDocuments {
     /** Role byte of a {@code 015e} record: an elected owner (bit 3) of its own zone. */
     public static final int ROLE_OWNER = 0x0d;
     public static final int ROLE_MEMBER = 0x05;
+    /** {@code 6240}: 0 no overlay, 1 until the next automatic change, 2 manual, 3 timer. */
+    public static final int OVERLAY_MANUAL = 2;
 
     private ConfigDocuments() {}
 
@@ -82,20 +87,47 @@ public final class ConfigDocuments {
     }
 
     /**
-     * A zone's state as a device reads it ({@code GET h/<home>/z/<n>/s}): at home, a heating
-     * zone, on, following {@code setpoint} (centi-degrees C), no overlay, no open window. The
-     * device keeps any tag a body leaves out.
+     * A zone's state as a device reads it ({@code GET h/<home>/z/<n>/s}) and as the coordinator
+     * writes it ({@code PUT z/s?id=<n>}): at home, a heating zone, on, following {@code setpoint}
+     * (centi-degrees C), no open window. With an {@code overlay} setpoint, a manual overlay
+     * ({@code 6240}=2, {@code 6260}=1, {@code 6280}) on top; without, {@code 6240}=0, which ends
+     * one the device holds. The device keeps any tag a body leaves out.
      */
-    public static byte[] zoneState(int setpoint) {
+    public static byte[] zoneState(int setpoint, OptionalInt overlay) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         tlv(out, 0x6160, new byte[] {1}); // home
         tlv(out, 0x6180, new byte[] {0});
         tlv(out, 0x6020, new byte[] {1}); // heating
         tlv(out, 0x61e0, new byte[] {1}); // on
         tlv(out, 0x6200, u16(setpoint));
-        tlv(out, 0x6240, new byte[] {0}); // no overlay
+        if (overlay.isPresent()) {
+            tlv(out, 0x6240, new byte[] {OVERLAY_MANUAL});
+            tlv(out, 0x6260, new byte[] {1}); // on
+            tlv(out, 0x6280, u16(overlay.getAsInt()));
+        } else {
+            tlv(out, 0x6240, new byte[] {0});
+        }
         tlv(out, 0x62e0, new byte[] {0}); // window closed
         return out.toByteArray();
+    }
+
+    public static byte[] zoneState(int setpoint) {
+        return zoneState(setpoint, OptionalInt.empty());
+    }
+
+    /** A TLV body by tag; a repeated tag keeps its last value. */
+    public static Map<Integer, byte[]> tlvs(byte[] body) {
+        Map<Integer, byte[]> out = new HashMap<>();
+        for (int i = 0; i + 3 <= body.length; ) {
+            int tag = (body[i] & 0xff) << 8 | (body[i + 1] & 0xff);
+            int len = body[i + 2] & 0xff;
+            if (i + 3 + len > body.length) {
+                throw new IllegalArgumentException("TLV %04x runs past the body".formatted(tag));
+            }
+            out.put(tag, Arrays.copyOfRange(body, i + 3, i + 3 + len));
+            i += 3 + len;
+        }
+        return out;
     }
 
     /**
@@ -164,7 +196,7 @@ public final class ConfigDocuments {
                 : new byte[] {(byte) (v >>> 16), (byte) (v >>> 8), (byte) v};
     }
 
-    private static int unsigned(byte[] v) {
+    public static int unsigned(byte[] v) {
         int x = 0;
         for (byte b : v) {
             x = x << 8 | (b & 0xff);

@@ -64,6 +64,17 @@ class ConfigDocumentsTest {
         assertArrayEquals(ConfigDocuments.etag(doc), option(answer, ConfigDocuments.ETAG));
     }
 
+    @Test
+    void zoneStateCarriesAnOverlayAsTheSensorEchoesIt() {
+        byte[] state = ConfigDocuments.zoneState(1800, java.util.OptionalInt.of(2100));
+        assertEquals("616001016180010060200101" + "61e00101620002070862400102626001016280020834" + "62e00100",
+                HexFormat.of().formatHex(state));
+        var tlvs = ConfigDocuments.tlvs(state);
+        assertEquals(2100, ConfigDocuments.unsigned(tlvs.get(0x6280)));
+        assertEquals(0, ConfigDocuments.unsigned(ConfigDocuments.tlvs(ConfigDocuments.zoneState(1800)).get(0x6240)));
+        assertThrows(IllegalArgumentException.class, () -> ConfigDocuments.tlvs(HexFormat.of().parseHex("62800208")));
+    }
+
     private CoapMessage get(int block2, byte[] etag) {
         List<CoapMessage.Option> options = new java.util.ArrayList<>();
         if (etag != null) {

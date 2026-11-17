@@ -3,6 +3,7 @@ package tadocoord.tado;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import tadocoord.Eui;
 import tadocoord.coap.CoapMessage;
@@ -19,6 +20,10 @@ public final class TadoResources {
     private static final int PAIR_KEY_TAG = 0x12; // plaintext network key (0x07 is cloud-KEK wrapped)
     private static final int SESSION_LIFETIME_MIN = 1440;
     private static final int PROTOBUF_FIXED32_FIELD1 = 0x0d;
+    private static final int URI_PORT = 7;
+    private static final int URI_QUERY = 15;
+    /** The source port of the bridge's own requests to a device. */
+    private static final int BRIDGE_PORT = 4005;
 
     private TadoResources() {}
 
@@ -40,6 +45,21 @@ public final class TadoResources {
                         new Option(CoapMessage.SESSION, session)),
                 tlv);
         return Datagram.udp(coordinator, joiner, Datagram.COAP_PORT, Datagram.COAP_PORT, m.encode());
+    }
+
+    /**
+     * The bridge's write of a zone's state to its device: {@code CON PUT z/s?id=<zone>} from port
+     * 4005 with Uri-Port ffff and Content-Format 42, as freedo's {@code deviceWrite} (and
+     * {@code bench.DeviceRequest}, which the sensor answered {@code 2.04}).
+     */
+    public static byte[] zoneStateWrite(int zone, byte[] state, int mid, Eui coordinator, Eui device) {
+        CoapMessage m = new CoapMessage(Type.CON, CoapMessage.code(0, 3), mid, new byte[0],
+                List.of(new Option(URI_PORT, new byte[] {(byte) 0xff, (byte) 0xff}),
+                        CoapMessage.path("z"), CoapMessage.path("s"),
+                        new Option(CoapMessage.CONTENT_FORMAT, new byte[] {CONTENT_FORMAT_OCTETS}),
+                        new Option(URI_QUERY, ("id=" + zone).getBytes(StandardCharsets.US_ASCII))),
+                state);
+        return Datagram.udp(coordinator, device, BRIDGE_PORT, Datagram.COAP_PORT, m.encode());
     }
 
     /**

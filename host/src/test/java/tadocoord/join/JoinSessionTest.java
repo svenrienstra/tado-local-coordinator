@@ -284,6 +284,107 @@ class JoinSessionTest {
         assertEquals(3, sent.size()); // no zone 12, no home 1: not ours to answer
     }
 
+    @Test
+    void keepsASetpointSetOnTheDeviceForTheOverlayTimeThenWritesTheZoneBack() throws Exception {
+        JoinSession serving = servingZone11(java.time.Duration.ofHours(1));
+        serving.onEvent(fromJoiner(false, overlayPut(0x0301, "62800208346240010262600101"))); // 21.00 C, manual
+        assertEquals(CoapMessage.code(2, 4), coap(unicasts().get(0)).code());
+
+        now = now.plusSeconds(59 * 60);
+        serving.onEvent(fromJoiner(false, get(0x0302, "h", "4242", "z", "11", "s")));
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800, java.util.OptionalInt.of(2100)),
+                coap(unicasts().get(1)).payload());
+
+        now = now.plusSeconds(60);
+        serving.tick();
+        assertEquals(3, unicasts().size());
+        TxRequest write = unicasts().get(2);
+        assertEquals(TxRequest.TRAIN_ANCHORED, write.flags());
+        CoapMessage w = coap(write);
+        assertEquals(CoapMessage.Type.CON, w.type());
+        assertEquals(CoapMessage.code(0, 3), w.code());
+        assertEquals("z/s", w.path());
+        assertArrayEquals("id=11".getBytes(), option(w, 15));
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800), w.payload()); // 6240=0, no 6440
+
+        serving.onEvent(fromJoiner(false, get(0x0303, "h", "4242", "z", "11", "s")));
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800), coap(unicasts().get(3)).payload());
+
+        serving.onEvent(fromJoiner(false, ack(w.mid(), CoapMessage.code(2, 4))));
+        now = now.plusSeconds(60);
+        serving.tick();
+        assertEquals(4, unicasts().size()); // acknowledged: not again
+    }
+
+    @Test
+    void repeatsAnUnacknowledgedZoneWriteUnderItsMidThenGivesUp() throws Exception {
+        JoinSession serving = servingZone11(java.time.Duration.ofMinutes(1));
+        serving.onEvent(fromJoiner(false, overlayPut(0x0311, "62800208346240010262600101")));
+        now = now.plusSeconds(60);
+        serving.tick();
+        int mid = coap(unicasts().get(1)).mid();
+        for (int i = 0; i < 10; i++) {
+            now = now.plus(JoinSession.ZONE_WRITE_TIMEOUT);
+            serving.tick();
+        }
+        assertEquals(1 + JoinSession.ZONE_WRITE_ATTEMPTS, unicasts().size());
+        for (int i = 1; i < unicasts().size(); i++) {
+            assertEquals(mid, coap(unicasts().get(i)).mid());
+        }
+    }
+
+    @Test
+    void anOverlayTheDeviceEndsOrThatIsNotItsZoneLeavesNothingToWrite() throws Exception {
+        JoinSession serving = servingZone11(java.time.Duration.ofMinutes(1));
+        serving.onEvent(fromJoiner(false, overlayPut(0x0321, "62800208346240010262600101")));
+        serving.onEvent(fromJoiner(false, overlayPut(0x0322, "6240010062600101"))); // ended on the device
+        CoapMessage other = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0x0323, new byte[0],
+                List.of(CoapMessage.path("h"), CoapMessage.path("4242"), CoapMessage.path("z"),
+                        CoapMessage.path("12"), CoapMessage.path("overlay")),
+                java.util.HexFormat.of().parseHex("62800208346240010262600101"));
+        serving.onEvent(fromJoiner(false, other)); // zone 12 is not the joiner's
+        now = now.plusSeconds(120);
+        serving.tick();
+        assertEquals(3, unicasts().size()); // three 2.04s, no write
+
+        serving.onEvent(fromJoiner(false, get(0x0324, "h", "4242", "z", "11", "s")));
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800), coap(unicasts().get(3)).payload());
+    }
+
+    @Test
+    void anOverlayTimeOfZeroKeepsTheDevicesSetpointUntilChanged() throws Exception {
+        JoinSession serving = servingZone11(java.time.Duration.ZERO);
+        serving.onEvent(fromJoiner(false, overlayPut(0x0331, "62800208346240010262600101")));
+        now = now.plus(java.time.Duration.ofDays(30));
+        serving.tick();
+        serving.onEvent(fromJoiner(false, get(0x0332, "h", "4242", "z", "11", "s")));
+        assertEquals(2, unicasts().size());
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800, java.util.OptionalInt.of(2100)),
+                coap(unicasts().get(1)).payload());
+    }
+
+    private JoinSession servingZone11(java.time.Duration deviceOverlay) {
+        return JoinSession.serving(coordinator, networkKey, radio, clock, new SplittableRandom(1), msg -> { })
+                .installation(new Installation(4242, java.util.Map.of(11, joiner), java.util.Map.of(), deviceOverlay));
+    }
+
+    /** The device's report of a setpoint set on it, as the sensor sent it. */
+    private static CoapMessage overlayPut(int mid, String body) {
+        return new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), mid, new byte[0],
+                List.of(CoapMessage.path("h"), CoapMessage.path("4242"), CoapMessage.path("z"),
+                        CoapMessage.path("11"), CoapMessage.path("overlay")),
+                java.util.HexFormat.of().parseHex(body));
+    }
+
+    /** What went to the device: not the periodic Router Advertisements a long wait brings. */
+    private List<TxRequest> unicasts() {
+        return sent.stream().filter(r -> r.dst().isPresent()).toList();
+    }
+
+    private static byte[] option(CoapMessage m, int number) {
+        return m.options().stream().filter(o -> o.number() == number).findFirst().orElseThrow().value();
+    }
+
     private static CoapMessage get(int mid, String... path) {
         List<CoapMessage.Option> options = new java.util.ArrayList<>();
         for (String p : path) {

@@ -66,6 +66,7 @@ public final class Main {
         Integer channelKhz = null; // the tuned one from state/, else CHANNEL_KHZ
         Map<Integer, Eui> zones = new TreeMap<>();
         Map<Integer, Integer> setpoints = new TreeMap<>();
+        Duration deviceOverlay = Installation.DEFAULT_DEVICE_OVERLAY;
         for (int i = 1; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--port" -> port = args[i + 1];
@@ -80,13 +81,14 @@ public final class Main {
                     String[] z = args[i + 1].split("=");
                     setpoints.put(Integer.parseInt(z[0]), (int) Math.round(Double.parseDouble(z[1]) * 100));
                 }
+                case "--overlay-minutes" -> deviceOverlay = Duration.ofMinutes(Long.parseLong(args[i + 1]));
                 default -> usage();
             }
         }
         if (port == null || (args[0].equals("join") && window <= 0)) {
             usage();
         }
-        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz, new Installation(0, zones, setpoints)));
+        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz, new Installation(0, zones, setpoints, deviceOverlay)));
     }
 
     /** With windowSeconds 0, serves without a pair window until stopped. */
@@ -111,9 +113,11 @@ public final class Main {
             if (windowSeconds == 0) {
                 JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
                         new SecureRandom(), Main::log)
-                        .installation(new Installation(id.homeId, zones.zoneOwners(), zones.setpoints()));
+                        .installation(new Installation(id.homeId, zones.zoneOwners(), zones.setpoints(),
+                                zones.deviceOverlay()));
                 log("serving the joined devices (home " + id.homeId + ", zones " + zones.zoneOwners()
-                        + ", setpoints " + zones.setpoints() + "); stop with Ctrl-C");
+                        + ", setpoints " + zones.setpoints() + ", a setpoint set on a device lasts "
+                        + (zones.deviceOverlay().isZero() ? "until changed" : zones.deviceOverlay()) + "); stop with Ctrl-C");
                 runWindow(link, session, events, Instant.MAX, identityFile);
                 return 0;
             }
@@ -274,6 +278,7 @@ public final class Main {
     private static void usage() {
         System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>] [--channel <kHz>]");
         System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>] [--zone <n>=<owner EUI>]... [--setpoint <n>=<C>]...");
+        System.err.println("             [--overlay-minutes <how long a setpoint set on a device lasts, 0: until changed; default 60>]");
         System.exit(2);
     }
 }

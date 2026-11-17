@@ -82,8 +82,22 @@ them (`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
    `6280`=2100, `6240`=2 (manual), `6260`=1 (on), then `h/<home>/z/11/act`
    `40a0`=94 % and `z/p` with 94 % within 1.4 s. The host answers `2.04` but
    does not keep it yet, so our zone state (`h/<home>/z/11/s`) still says 18.00
-   with no overlay; keeping overlays is M3 (the setpoint in Home Assistant
-   following the device).
+   with no overlay.
+7. **The zone state overrides the device.** 17 minutes later (16:18) it read
+   `h/<home>/z/11/s` again, got 18.00 with `6240`=0, and dropped its overlay:
+   demand 100 % to 53 % within 4 s, and its `z/s` echo read `6200`=18.00,
+   `6240`=0 (`6280` kept 21.00, unused). It re-reads the zone state about every
+   20 minutes and after each config read. So the coordinator must keep a device
+   overlay and serve it in the zone state, or a setpoint set on the device lasts
+   at most about 20 minutes.
+8. **The host keeps it now** (`serve --overlay-minutes`, default 60; 0 keeps
+   it until changed): it serves the overlay in `h/<home>/z/11/s` (`6240`=2,
+   `6260`=1, `6280`) until the time is up, then writes `CON PUT z/s?id=11`
+   (from port 4005, Uri-Port ffff, CF 42) with `6240`=0 and no `6440`, as
+   freedo's expiry write. Tried with 5 minutes and 20 C set on the sensor
+   (19:16): at expiry the sensor ACKed `2.04` 1.1 s later, demand fell from
+   100 % to 36 %, and its `z/s` echo read `6200`=18.00, `6240`=0. The overlay
+   lives in memory only: a host restart forgets it.
 
 No motor, so nothing to home. A wrong document is fixed by serving a corrected
 one under a new ETag, or `POST d/reboot` (it keeps its key); the last resort is
