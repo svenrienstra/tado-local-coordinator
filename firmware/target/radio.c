@@ -140,8 +140,7 @@ static void callback(RF_Handle h, RF_CmdHandle ch, RF_EventMask ev)
     while (tx_checked < chain_tx && tx_status(tx_checked) > ACTIVE)
         note_status(tx_status(tx_checked++));
     /* The job ends with its Data frame, the chain's last TX. Its status is read
-     * on any event rather than counting TxDone events, which can merge or get
-     * lost. */
+     * on any event rather than counting CmdDone events, which can merge. */
     if (job == JOB_ON_AIR) {
         uint16_t st = tx_status(chain_tx - 1);
         if (st == PROP_DONE_OK)
@@ -215,8 +214,10 @@ static void post_chain(unsigned n)
     rx_out = (rfc_propRxOutput_t){0};
     rx_ok_seen = rx_nok_seen = 0;
     rfc_radioOp_t *head = n ? (rfc_radioOp_t *)&tx_cmds[0] : (rfc_radioOp_t *)&rx_cmd;
+    /* CmdDone fires as each command of the chain ends. TxDone does not fire
+     * for CMD_PROP_TX, and LastCmdDone waits for the trailing RX to stop. */
     current = RF_postCmd(rf, head, RF_PriorityNormal, callback,
-                         RF_EventRxEntryDone | RF_EventTxDone | RF_EventLastCmdDone);
+                         RF_EventRxEntryDone | RF_EventCmdDone | RF_EventLastCmdDone);
 }
 
 static void set_tx(rfc_CMD_PROP_TX_t *cmd, const uint8_t *frame, size_t len, uint32_t start)
@@ -297,10 +298,14 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t n_wake,
     return true;
 }
 
-void radio_abort_job(void)
+unsigned radio_abort_job(void)
 {
+    unsigned ran = 0;
+    while (ran < chain_tx && tx_status(ran) > ACTIVE)
+        ran++;
     job = JOB_NONE;
     post_chain(0);
+    return ran;
 }
 
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail)

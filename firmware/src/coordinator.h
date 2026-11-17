@@ -43,8 +43,9 @@ bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start);
  * when busy. */
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frames,
                     const uint8_t *frame, size_t len, uint8_t token);
-/* Drops the running job, if any; no coord_on_job_sent() follows for it. */
-void radio_abort_job(void);
+/* Drops the running job, if any; no coord_on_job_sent() follows for it.
+ * Returns how many of its TX commands (wake-up frames, then Data) had run. */
+unsigned radio_abort_job(void);
 /* Frames the RF core received since boot with a good and with a bad CRC. */
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 

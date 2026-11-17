@@ -92,7 +92,9 @@ all: $(BUILD)/coordinator.hex
 
 $(BUILD)/obj/%.o: %.c
 	@mkdir -p $(BUILD)/obj
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(TARGET_OBJS:.o=.d)
 
 $(BUILD)/coordinator.elf: $(TARGET_OBJS) target/cc1312r1.lds
 	$(CC) $(LDFLAGS) -o $@ $(TARGET_OBJS)

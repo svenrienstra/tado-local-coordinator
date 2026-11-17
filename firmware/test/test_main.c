@@ -114,7 +114,11 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frame
     return true;
 }
 
-void radio_abort_job(void) { job_aborts++; }
+unsigned radio_abort_job(void)
+{
+    job_aborts++;
+    return 0;
+}
 
 static uint32_t rf_rx_ok, rf_rx_crc_fail;
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail)
@@ -722,10 +726,12 @@ static void test_stats_and_log(void)
     host_request(&c, 6, HL_TX, tx, sizeof tx);
     coord_poll(&c);
     h = c.queue[0].handle;
+    unsigned n_tx = c.queue[0].wake_frames + 1u;
     now_ms += 1000;
     coord_poll(&c);
     want[4] = (char)('0' + h);
-    strcpy(&want[5], " timeout");
+    /* The stub radio reports that none of the chain's TX commands ran. */
+    snprintf(&want[5], sizeof want - 5, " timeout, 0/%u TX ran", n_tx);
     CHECK(log_is(1, want));
     strcpy(&want[5], " radio-error");
     CHECK(log_is(2, want));

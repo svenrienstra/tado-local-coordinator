@@ -418,8 +418,16 @@ void coord_poll(struct coordinator *c)
     /* A lost completion would hold the radio forever: give up on the job. */
     if (c->job_on_air && !c->awaiting_ack && !before(platform_ms(), c->job_deadline_ms)) {
         c->stats.jobs_timed_out++;
-        log_job(c, c->queue[0].handle, "timeout");
-        radio_abort_job();
+        unsigned ran = radio_abort_job();
+        struct log_line l = {.len = 0};
+        log_str(&l, "job ");
+        log_dec(&l, c->queue[0].handle);
+        log_str(&l, " timeout, ");
+        log_dec(&l, ran);
+        log_str(&l, "/");
+        log_dec(&l, c->queue[0].wake_frames + 1u);
+        log_str(&l, " TX ran");
+        log_send(c, &l);
         tx_done(c, TX_RADIO_ERROR);
     }
     if (c->queue_len > 0 && !c->job_on_air) {
