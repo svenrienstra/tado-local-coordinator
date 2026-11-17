@@ -269,7 +269,7 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
 
 static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
 {
-    uint32_t v[14];
+    uint32_t v[15];
     _Static_assert(sizeof v <= HL_MAX_REPLY, "STATS reply exceeds HL_MAX_REPLY");
     radio_rx_counts(&v[0], &v[1]);
     v[2] = c->stats.rx_unverified;
@@ -284,7 +284,8 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     v[11] = c->link.resyncs;
     v[12] = c->stats.acks_late;
     v[13] = c->stats.jobs_anchored;
-    for (size_t i = 0; i < 14; i++)
+    v[14] = c->stats.rx_duplicates;
+    for (size_t i = 0; i < 15; i++)
         put32(&reply[4 * i], v[i]);
     *reply_len = sizeof v;
 }
@@ -447,6 +448,30 @@ static bool send_ack(struct coordinator *c, uint8_t seq, const uint8_t dst[8], u
     return true;
 }
 
+/* Whether a verified unicast repeats the last one from its source; records it
+ * otherwise. */
+static bool repeated_unicast(struct coordinator *c, const struct mac_data *d)
+{
+    uint32_t now = platform_ms();
+    struct last_seq *slot = NULL, *oldest = &c->last_seqs[0];
+    for (size_t i = 0; i < DEDUP_SOURCES; i++) {
+        struct last_seq *e = &c->last_seqs[i];
+        if (e->valid && memcmp(e->src, d->src, 8) == 0)
+            slot = e;
+        if (!e->valid || (oldest->valid && before(e->at_ms, oldest->at_ms)))
+            oldest = e;
+    }
+    if (slot && slot->seq == d->seq && before(now, slot->at_ms + DEDUP_WINDOW_MS))
+        return true;
+    if (slot == NULL)
+        slot = oldest;
+    slot->valid = true;
+    memcpy(slot->src, d->src, 8);
+    slot->seq = d->seq;
+    slot->at_ms = now;
+    return false;
+}
+
 static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_t *frame,
                          size_t len, int8_t rssi, uint32_t rat_end)
 {
@@ -476,6 +501,10 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
     }
     if (d.broadcast)
         flags |= RXF_BROADCAST;
+    else if (repeated_unicast(c, &d)) {
+        c->stats.rx_duplicates++;
+        return;
+    }
 
     uint8_t head[1 + 1 + 1 + 8 + 4 + 4];
     head[0] = flags;

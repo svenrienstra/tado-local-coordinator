@@ -241,6 +241,26 @@ class JoinSessionTest {
     }
 
     @Test
+    void answersARepeatedRequestOnceWhileItsAnswerIsOnItsWay() throws Exception {
+        CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa339, new byte[0],
+                List.of(CoapMessage.path("z"), CoapMessage.path("p")), new byte[] {0x40, 0x60});
+        session.onEvent(fromJoiner(false, put));
+        session.onEvent(fromJoiner(false, put)); // the device repeats before our answer lands
+        assertEquals(1, sent.size());
+
+        session.onEvent(new Event.TxDone(1, Event.TxDone.Result.NO_ACK));
+        session.onEvent(fromJoiner(false, put)); // it repeats again: the same answer goes again
+        assertEquals(2, sent.size());
+        assertArrayEquals(sent.get(0).packet(), sent.get(1).packet());
+
+        CoapMessage next = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa33a, new byte[0],
+                List.of(CoapMessage.path("z"), CoapMessage.path("p")), new byte[] {0x40, 0x60});
+        session.onEvent(fromJoiner(false, next)); // a new MID is a new request
+        assertEquals(3, sent.size());
+        assertEquals(0xa33a, coap(sent.get(2)).mid());
+    }
+
+    @Test
     void answersAFragmentedReportWith204() throws Exception {
         CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa302, new byte[] {7},
                 List.of(CoapMessage.path("d"), CoapMessage.path("SU0000000001"), CoapMessage.path("fw"),

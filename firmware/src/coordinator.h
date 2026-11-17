@@ -84,6 +84,11 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 #define ANCHOR_GUARD_MAX_RAT  (CSL_PERIOD_RAT / 2u)
 #define ANCHOR_MISS_LIMIT     4
 #define ANCHORS               16
+/* A device repeats a unicast it saw no Enhanced ACK for under the same MAC seq,
+ * 1-3 s later. Each copy is ACKed, but only the first reaches the host, or it
+ * answers every copy behind a train of its own. */
+#define DEDUP_SOURCES         16
+#define DEDUP_WINDOW_MS       30000u
 #define TX_QUEUE_LEN          4
 #ifdef SNIFF
 #define UNVERIFIED_PER_SECOND 1000 /* every frame of a 254-frame train */
@@ -107,6 +112,13 @@ struct tx_job {
     size_t len;
 };
 
+struct last_seq {
+    bool valid;
+    uint8_t src[8];
+    uint8_t seq;
+    uint32_t at_ms;
+};
+
 struct anchor {
     bool valid;
     uint8_t short_addr[2];
@@ -122,6 +134,7 @@ struct coord_stats {
     uint32_t acks_sent;
     uint32_t acks_late; /* posted after their start time; the radio sent them late */
     uint32_t jobs_anchored; /* jobs sent behind a short train on the device's sample */
+    uint32_t rx_duplicates; /* repeated unicasts (same source and MAC seq), ACKed, not passed on */
     uint32_t answers_refused;
     uint32_t jobs_ok;
     uint32_t jobs_failed;
@@ -142,6 +155,7 @@ struct coordinator {
     uint64_t rat_high; /* RAT wraps every 1074 s: its upper 32 bits */
     uint32_t rat_last;
     struct anchor anchors[ANCHORS];
+    struct last_seq last_seqs[DEDUP_SOURCES];
 
     struct tx_job queue[TX_QUEUE_LEN];
     size_t queue_len;

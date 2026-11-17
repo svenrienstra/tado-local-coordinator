@@ -473,7 +473,18 @@ static void test_coordinator_key_fallback(void)
     ev = host_frame(HL_EV_RX, 0, &len);
     CHECK(ev && !(ev[0] & 0x01));
 
+    /* A repeat of it (same MAC seq, as a device retries a frame it saw no ACK
+     * for) is ACKed again but not passed on; a new seq is. */
+    reset_stubs();
+    coord_on_rx(&c, f, n, -50, 5200);
+    CHECK(sends == 1 && host_frame(HL_EV_RX, 0, &len) == NULL && c.stats.rx_duplicates == 1);
+    now_ms += DEDUP_WINDOW_MS;
+    coord_on_rx(&c, f, n, -50, 5300);
+    CHECK(host_frame(HL_EV_RX, 0, &len) != NULL); /* outside the window: a new frame */
+
     /* An ACK the busy radio refuses is not reported as sent. */
+    n = mac_seal_unicast(f, V("in.network_key")->data, false, 11, coord, joiner, 5, pkt,
+                         sizeof pkt);
     reset_stubs();
     radio_busy = true;
     coord_on_rx(&c, f, n, -50, 5500);
@@ -745,7 +756,7 @@ static uint32_t stat(struct coordinator *c, int i)
     host_out_len = 0;
     host_request(c, seq++, HL_STATS, NULL, 0);
     const uint8_t *r = host_frame(HL_STATS | HL_REPLY_FLAG, 0, &len);
-    if (!r || len != 1 + 56 || r[0] != HL_OK)
+    if (!r || len != 1 + 60 || r[0] != HL_OK)
         return 0xffffffffu;
     const uint8_t *v = &r[1 + 4 * i];
     return v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
@@ -754,7 +765,7 @@ static uint32_t stat(struct coordinator *c, int i)
 enum {
     S_RX_OK, S_RX_CRC_FAIL, S_RX_UNVERIFIED, S_BEACONS, S_ACKS, S_REFUSED, S_JOBS_OK,
     S_JOBS_FAILED, S_JOBS_TIMED_OUT, S_RADIO_ERRORS, S_LINK_CRC, S_LINK_RESYNCS, S_ACKS_LATE,
-    S_JOBS_ANCHORED,
+    S_JOBS_ANCHORED, S_RX_DUPLICATES,
 };
 
 static void test_stats_and_log(void)

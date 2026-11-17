@@ -7,8 +7,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -48,6 +50,11 @@ public final class JoinSession {
      */
     static final Duration RA_INTERVAL_MIN = Duration.ofSeconds(200);
     static final Duration RA_INTERVAL_MAX = Duration.ofSeconds(600);
+    /**
+     * How long an answer is kept for a repeated request (same device and MID). A device
+     * retries a CON request 2-3 s apart, up to three times.
+     */
+    static final Duration ANSWER_LIFETIME = Duration.ofSeconds(60);
 
     private static final int ICMP_ROUTER_SOLICITATION = 133;
     private static final int PUT = CoapMessage.code(0, 3);
@@ -64,6 +71,21 @@ public final class JoinSession {
     private final RandomGenerator rng;
     private final Consumer<String> progress;
     private final Reassembler reassembler = new Reassembler();
+    /** Our answer to each recent request, for its repeats. */
+    private final Map<Exchange, Answer> answers = new HashMap<>();
+
+    private record Exchange(Eui device, int mid) {}
+
+    private static final class Answer {
+        final byte[] packet;
+        final Instant at;
+        int handle; // -1 once the radio is done with it
+
+        Answer(byte[] packet, Instant at) {
+            this.packet = packet;
+            this.at = at;
+        }
+    }
 
     private State state = State.WAITING_FOR_JOINER;
     private Optional<Eui> joiner = Optional.empty();
@@ -126,6 +148,7 @@ public final class JoinSession {
             progress.accept("no TX_DONE for d/pair, assuming it went out");
             pairLeftRadio();
         }
+        answers.values().removeIf(a -> !now.isBefore(a.at.plus(ANSWER_LIFETIME)));
         if (raHandle < 0 && !now.isBefore(nextRa) && raAllowed()) {
             sendRouterAdvert();
         }
@@ -209,20 +232,27 @@ public final class JoinSession {
             return; // only d/pair's answer matters before the device holds our key
         }
         String path = m.path();
+        Exchange exchange = new Exchange(rx.src(), m.mid());
+        Answer earlier = m.type() == CoapMessage.Type.CON ? answers.get(exchange) : null;
+        if (earlier != null) {
+            // A repeat: the same answer again, unless it is still on its way.
+            if (earlier.handle < 0) {
+                progress.accept("%s from %s again, answering it again".formatted(path, rx.src()));
+                earlier.handle = send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED, earlier.packet));
+            }
+            return;
+        }
         if (m.type() == CoapMessage.Type.CON && (path.equals("auth/token") || path.equals("auth/key"))) {
             progress.accept(path + " from " + rx.src() + ", answering with a session");
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
-                    TadoResources.authTokenAnswer(m, sessionId(rx.src()), d, coordinator, rx.src())));
+            answer(exchange, TadoResources.authTokenAnswer(m, sessionId(rx.src()), d, coordinator, rx.src()));
         } else if (m.type() == CoapMessage.Type.CON && path.equals("time")) {
             progress.accept("time from " + rx.src());
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
-                    TadoResources.timeAnswer(m, clock.instant().getEpochSecond(), d, coordinator, rx.src())));
+            answer(exchange, TadoResources.timeAnswer(m, clock.instant().getEpochSecond(), d, coordinator, rx.src()));
         } else if (m.type() == CoapMessage.Type.CON && (m.code() == PUT || m.code() == POST)) {
             // Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries.
             progress.accept("%s %s from %s, answering 2.04: %s".formatted(CoapMessage.codeString(m.code()), path,
                     rx.src(), HexFormat.of().formatHex(m.payload())));
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
-                    TadoResources.changedAnswer(m, d, coordinator, rx.src())));
+            answer(exchange, TadoResources.changedAnswer(m, d, coordinator, rx.src()));
         } else {
             progress.accept("CoAP %s %s %s from %s (not handled yet)".formatted(
                     m.type(), CoapMessage.codeString(m.code()), path, rx.src()));
@@ -256,7 +286,19 @@ public final class JoinSession {
         }
     }
 
+    /** Sends an answer on the device's sample and keeps it for the request's repeats. */
+    private void answer(Exchange exchange, byte[] packet) throws IOException {
+        Answer a = new Answer(packet, clock.instant());
+        a.handle = send(TxRequest.unicast(exchange.device(), TxRequest.TRAIN_ANCHORED, packet));
+        answers.put(exchange, a);
+    }
+
     private void onTxDone(Event.TxDone done) throws IOException {
+        for (Answer a : answers.values()) {
+            if (a.handle == done.handle()) {
+                a.handle = -1;
+            }
+        }
         if (done.handle() == raHandle) {
             raEnded();
         } else if (done.handle() == pairHandle) {

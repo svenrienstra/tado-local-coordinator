@@ -86,6 +86,7 @@ knows, so firmware may append new ones):
 | 11 | `link_resyncs` | bytes skipped while searching for a frame start |
 | 12 | `acks_late` | Enhanced ACKs posted after their start time (sent late; the device may not take them) |
 | 13 | `jobs_anchored` | TX jobs sent behind a short train on the device's channel sample |
+| 14 | `rx_duplicates` | unicasts that repeat the last one from their source (same MAC seq, within 30 s): ACKed, not sent as `RX` |
 
 ## Events (CC1312 -> host)
 
