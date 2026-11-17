@@ -43,39 +43,40 @@ answers are the device's, decoded with freedo's tag tables (`PROTOCOL.md`).
 Values are big-endian; a version is `major<<6 | minor`. The firmware is the same
 215 family as freedo's valves and wall thermostat.
 
-## Next: config and zone (plan, not yet tried)
+## Config and zone (tried 2026-11-17)
 
 freedo does not support the sensor (no capture of one; its serial pattern even
-skips `SU`), so this is inferred from how its valves and wall thermostat work
-(`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
-`build_zone_config.go`; `PROTOCOL.md` 489-618 and 1014-1263).
+skips `SU`), so the documents follow how its valves and wall thermostat take
+them (`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
+`build_zone_config.go`; `PROTOCOL.md` 489-618 and 1014-1263). Served by
+`serve --zone 11=<sensor EUI>` (`tadocoord.tado.ConfigDocuments`).
 
-1. **Answer `GET d/<serial>/config`.** Today it gets no answer; freedo answers a
-   device it holds no document for with `5.03`. A thermostat holds back its other
-   uplinks until it gets a `2.05`/`2.03`, which may be why the sensor keeps
-   asking. The answer: ACK `2.05` with an 8-byte ETag (option 4) and Block2
-   (option 23, 128-byte blocks, M set while more follow), no Content-Format, and
-   TLVs (tag 2 B, length 1 B, value BE, each value at most 8 bytes):
-   - `0143`=00 (trace off)
-   - `015c`= our **home id**, u32, not 0. A device applies nothing with home 0
-     and uses it in every `h/<home>/...` path, in decimal.
-   - `02b3`=00 (no offline schedule; 1 makes it fetch `h/<home>/z/N/sched`)
-   - `015e`= one `[role][zone]` record per zone, the whole table in one transfer:
-     `0d0b` makes it the elected owner (bit 3) of zone 11
-   - `0158`=`0200` (notify on a remote overlay change)
-   - leave out `015d` (interface module id: unknown for a sensor, and a wrong one
-     breaks valves and thermostats), `0140` (its own offset), `0149` and `021a`
-     (valve only), and `015a` (the ETag never goes in a GET answer).
-   A matching ETag in its request gets `2.03` with no body.
-2. **Then it should `GET h/<home>/z/11/config`**, the zone document. Make it the
-   owner and measuring endpoint: `6020`=1, `63e0`=1, `63a0`=`<sensor>/z/s`,
-   `8400`=`<sensor>/z/p`, `8000`=`<sensor>/z/s`, `6040`=`<sensor>/z/p`, PID
-   `6080`=1000, `60a0`=500, `60c0`=1500, `60e0`=1, `62c0`=900, `6380`=900. A URI
-   is `coap://[fe80:0:0:0:<EUI-64 with the U/L bit flipped, lowercase hex>]/z/<res>`.
-   Same ETag/Block2 shape; an unknown zone gets `4.04`.
-3. **Watch** for `PUT z/p?lid=11`, `h/<home>/z/11/act` and the other reports a
-   valve sends after this, and for the config retries stopping.
+1. **`GET d/<serial>/config`** (Block2 0/0/128, with the ETag it kept from tado)
+   gets an ACK `2.05` with our ETag, Block2 and, as TLVs (2-byte tag, 1-byte
+   length, big-endian value, at most 8 bytes): `0143`=00, `015c`=our home id
+   (u32, not 0), `02b3`=00, `015e`=`0d0b` (elected owner of zone 11), `0158`=
+   `0200`. Left out: `015d` (interface module id, unknown for a sensor and
+   harmful when wrong on valves and thermostats), `0140`, `0149`, `021a`,
+   `015a`. It asked twice, then stopped asking.
+2. It then **GETs `h/<home>/z/11/config`**: the zone document with it as owner
+   and measuring endpoint (`6020`=1, `63e0`=1, `63a0`/`8000`=`<sensor>/z/s`,
+   `8400`/`6040`=`<sensor>/z/p`, PID 1000/500/1500, `60e0`=1, `62c0`/`6380`=900;
+   URIs `coap://[fe80:0:0:0:<EUI-64, U/L bit flipped>]/z/<res>`). Asked for in
+   128-byte blocks, it **took 64-byte ones**: it asked for blocks 1, 2 and 3 in
+   turn and stopped at the last. That keeps every block in one frame.
+3. Then `PUT d/<serial>/err` (`01a3`=0) and `d/<serial>/fallback` (`0182`=0),
+   as a valve reports after a new config, and **`GET h/<home>/z/11/s`**, the
+   zone state: we answer `6160`=1 `6180`=0 `6020`=1 `61e0`=1 `6200`=<setpoint>
+   `6240`=0 `62e0`=0.
+4. Then it reports as the zone's owner: `PUT d/<serial>/sen` (`0162` battery
+   4175 mV, `012d` 18.66 C, `012e` 18.67 C, `0135` 56.5 %, `0136`=4),
+   `PUT h/<home>/z/11/act` with `40a0` = its heating demand, `z/p` with the same
+   demand, and `PUT z/s` echoing the zone state.
+5. **It runs the zone's controller.** At 18.00 C against 18.66 measured it
+   reported 0 %. A `PUT z/s?id=11` with 21.00 C: `2.04`, then within 1.8 s
+   `h/<home>/z/11/act` `40a0`=100 % and `z/p` with 100 %, and the display showed
+   21. Set back to 18.00 the same way.
 
-Risks: no motor to home on a sensor. A wrong document is fixed by serving a
-corrected one under a new ETag, or `POST d/reboot` (it keeps its key); the last
-resort is pairing it again.
+No motor, so nothing to home. A wrong document is fixed by serving a corrected
+one under a new ETag, or `POST d/reboot` (it keeps its key); the last resort is
+pairing it again.
