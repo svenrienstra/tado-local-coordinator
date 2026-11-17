@@ -14,7 +14,7 @@
 #define HL_MAX_FRAME   (HL_MAX_BODY + 6)
 #define HL_REPLY_FLAG  0x80
 /* Reply payload after the status byte; the largest is STATS, 12 u32. */
-#define HL_MAX_REPLY   48
+#define HL_MAX_REPLY   64
 
 enum hl_status {
     HL_OK = 0x00,

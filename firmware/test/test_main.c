@@ -221,6 +221,18 @@ static void test_wakeup_and_ack(void)
     mac_build_enh_ack(ack, 0x22, V("in.joiner_eui")->data, V("in.coord_eui")->data, 0x0123);
     CHECK_VEC(ack, sizeof ack, "enh_ack.frame");
     CHECK(mac_parse_enh_ack(ack, sizeof ack, &seq, dst) && seq == 0x22);
+
+    /* The ACK's target comes from the clear header of a unicast to us that asks
+     * for one, the EUI's encrypted tail being the fixed tado suffix. */
+    const uint8_t *coord = V("in.coord_eui")->data, *joiner = V("in.joiner_eui")->data;
+    static const uint8_t pkt[2] = {0x7e, 0x33};
+    uint8_t f[MAC_MAX_FRAME], src[8];
+    size_t n = mac_seal_unicast(f, V("in.network_key")->data, false, 0x41, coord, joiner, 1, pkt,
+                                sizeof pkt);
+    CHECK(mac_ack_request(f, n, coord, &seq, src) && seq == 0x41 && memcmp(src, joiner, 8) == 0);
+    CHECK(!mac_ack_request(f, n, joiner, &seq, src)); /* not to us */
+    n = mac_seal_broadcast(f, V("in.network_key")->data, false, 0x42, coord, 1, pkt, sizeof pkt);
+    CHECK(!mac_ack_request(f, n, coord, &seq, src));
     ack[5] ^= 1;
     CHECK(!mac_parse_enh_ack(ack, sizeof ack, &seq, dst));
 }
@@ -422,11 +434,12 @@ static void test_coordinator_key_fallback(void)
     now_ms = 5000;
     configure(&c, 0);
 
-    /* A joiner's frame under the pairing key: refused while the window is closed. */
+    /* A joiner's frame under the pairing key: refused while the window is closed,
+     * though ACKed, since the ACK goes out before any key is tried. */
     size_t n = mac_seal_unicast(f, PAIRING_KEY, false, 9, coord, joiner, 3, pkt, sizeof pkt);
     reset_stubs();
     coord_on_rx(&c, f, n, -50, 4000);
-    CHECK(host_frame(HL_EV_RX, 0, &len) == NULL && sends == 0);
+    CHECK(host_frame(HL_EV_RX, 0, &len) == NULL && sends == 1);
 
     /* Window open: accepted, flagged as pairing key, and Enhanced-ACKed. */
     uint8_t secs[2] = {60, 0};
@@ -631,7 +644,7 @@ static uint32_t stat(struct coordinator *c, int i)
     host_out_len = 0;
     host_request(c, seq++, HL_STATS, NULL, 0);
     const uint8_t *r = host_frame(HL_STATS | HL_REPLY_FLAG, 0, &len);
-    if (!r || len != 1 + 48 || r[0] != HL_OK)
+    if (!r || len != 1 + 52 || r[0] != HL_OK)
         return 0xffffffffu;
     const uint8_t *v = &r[1 + 4 * i];
     return v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
@@ -639,7 +652,7 @@ static uint32_t stat(struct coordinator *c, int i)
 
 enum {
     S_RX_OK, S_RX_CRC_FAIL, S_RX_UNVERIFIED, S_BEACONS, S_ACKS, S_REFUSED, S_JOBS_OK,
-    S_JOBS_FAILED, S_JOBS_TIMED_OUT, S_RADIO_ERRORS, S_LINK_CRC, S_LINK_RESYNCS,
+    S_JOBS_FAILED, S_JOBS_TIMED_OUT, S_RADIO_ERRORS, S_LINK_CRC, S_LINK_RESYNCS, S_ACKS_LATE,
 };
 
 static void test_stats_and_log(void)
@@ -694,12 +707,23 @@ static void test_stats_and_log(void)
     size_t n = mac_seal_unicast(f, V("in.network_key")->data, false, 9, V("in.coord_eui")->data,
                                 joiner, 1, pkt, sizeof pkt);
     reset_stubs();
+    now_rat = 3000 + 400; /* the main loop sees the frame 100 us after it ended */
     coord_on_rx(&c, f, n, -50, 3000);
     radio_busy = true;
     coord_on_rx(&c, f, n, -50, 4000);
     CHECK(log_is(0, "refused ack seq=9"));
-    CHECK(stat(&c, S_ACKS) == 1 && stat(&c, S_REFUSED) == 2);
+    CHECK(stat(&c, S_ACKS) == 1 && stat(&c, S_REFUSED) == 2 && stat(&c, S_ACKS_LATE) == 0);
     radio_busy = false;
+
+    /* An ACK posted after its start time still goes out, late, and is counted. */
+    reset_stubs();
+    now_rat = 6000 + ACK_DELAY_RAT + 8;
+    coord_on_rx(&c, f, n, -50, 6000);
+    char late[64];
+    snprintf(late, sizeof late, "late ack seq 9: posted %u us after the frame end",
+             (unsigned)(ACK_DELAY_RAT + 8) / 4u);
+    CHECK(log_is(0, late));
+    CHECK(stat(&c, S_ACKS) == 2 && stat(&c, S_ACKS_LATE) == 1);
 
     /* Jobs: one acked, one with no ACK, one the watchdog ends. */
     uint8_t tx[1 + 8 + sizeof pkt];

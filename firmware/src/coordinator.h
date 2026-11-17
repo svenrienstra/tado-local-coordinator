@@ -54,7 +54,10 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
  * 0-1 ms after the Data frame. */
 #define RAT_PER_MS            4000u
 #define BEACON_DELAY_RAT      (3u * RAT_PER_MS)
-#define ACK_DELAY_RAT         (RAT_PER_MS / 2u)
+/* Enhanced ACK start after the frame ends: the commercial bridge's is 0-1 ms.
+ * A frame reaches the main loop about 0.5 ms after its end and the ACK is
+ * posted from its clear header right away, so 0.6 ms is met every time. */
+#define ACK_DELAY_RAT         (RAT_PER_MS * 3u / 5u)
 #define ACK_WAIT_MS           30u
 #define WAKE_STEP_MS          4u  /* wake-up frame spacing */
 #define JOB_MARGIN_MS         50u /* chain setup, gap before Data, PHY overhead */
@@ -78,6 +81,7 @@ struct coord_stats {
     uint32_t rx_unverified;
     uint32_t beacons_answered;
     uint32_t acks_sent;
+    uint32_t acks_late; /* posted after their start time; the radio sent them late */
     uint32_t answers_refused;
     uint32_t jobs_ok;
     uint32_t jobs_failed;

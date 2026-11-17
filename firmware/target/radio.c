@@ -119,9 +119,12 @@ static void drain_queue(void)
             s->rssi = (int8_t)d[1 + s->len];
             uint32_t ts;
             memcpy(&ts, &d[2 + s->len], 4);
-            /* The timestamp marks the sync word; the frame ends after the
-             * length byte, the frame and the 2-byte CRC. */
-            s->rat_end = ts + (uint32_t)(1 + s->len + 2) * RAT_PER_BYTE;
+            /* The RF core dates a packet at its first preamble bit, though it
+             * detects the sync word (TI, "Time synchronization over the air").
+             * The frame ends after preamble, sync word, length byte, frame and
+             * 2-byte CRC. The callback runs about 0.47 ms after that end. */
+            unsigned head = rf_cmd_setup.preamConf.nPreamBytes + rf_cmd_setup.formatConf.nSwBits / 8u;
+            s->rat_end = ts + (uint32_t)(head + 1 + s->len + 2) * RAT_PER_BYTE;
             slot_head++;
         }
         e->status = DATA_ENTRY_PENDING;

@@ -84,6 +84,7 @@ knows, so firmware may append new ones):
 | 9 | `radio_errors` | RF command errors (each also sent as a `LOG`) |
 | 10 | `link_crc_errors` | host-link frames dropped for a bad CRC |
 | 11 | `link_resyncs` | bytes skipped while searching for a frame start |
+| 12 | `acks_late` | Enhanced ACKs posted after their start time (sent late; the device may not take them) |
 
 ## Events (CC1312 -> host)
 

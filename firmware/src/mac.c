@@ -201,6 +201,19 @@ bool mac_data_addressed_to(const uint8_t *f, size_t len, enum mac_kind kind,
     return kind == MAC_KIND_BROADCAST || (kind == MAC_KIND_UNICAST && memcmp(&f[3], eui, 8) == 0);
 }
 
+bool mac_ack_request(const uint8_t *f, size_t len, const uint8_t eui[8], uint8_t *seq,
+                     uint8_t src[8])
+{
+    static const uint8_t tado_suffix[3] = {0xc5, 0x1b, 0x00};
+    if (mac_classify(f, len) != MAC_KIND_UNICAST ||
+        !mac_data_addressed_to(f, len, MAC_KIND_UNICAST, eui) || !(f[0] & FCF0_ACK_REQUEST))
+        return false;
+    *seq = f[2];
+    memcpy(src, &f[11], 5);
+    memcpy(&src[5], tado_suffix, 3);
+    return true;
+}
+
 bool mac_open_data(const uint8_t *f, size_t len, const uint8_t key[16],
                    uint8_t scratch[MAC_MAX_FRAME], struct mac_data *out)
 {

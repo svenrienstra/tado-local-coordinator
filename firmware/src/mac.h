@@ -85,6 +85,13 @@ bool mac_data_addressed_to(const uint8_t *frame, size_t len, enum mac_kind kind,
 bool mac_open_data(const uint8_t *frame, size_t len, const uint8_t key[16],
                    uint8_t scratch[MAC_MAX_FRAME], struct mac_data *out);
 
+/* A unicast to eui that asks for an Enhanced ACK: sets its seq and the
+ * sender's EUI. Reads the clear header only, so the ACK can go out before the
+ * MIC is checked, as a device expects it within about 1 ms. The last three
+ * bytes of a tado EUI, carried encrypted, are always c5 1b 00. */
+bool mac_ack_request(const uint8_t *frame, size_t len, const uint8_t eui[8], uint8_t *seq,
+                     uint8_t src[8]);
+
 /* Reads an Enhanced ACK; false on a bad length or FCS. */
 bool mac_parse_enh_ack(const uint8_t *frame, size_t len, uint8_t *seq, uint8_t dst[8]);
 

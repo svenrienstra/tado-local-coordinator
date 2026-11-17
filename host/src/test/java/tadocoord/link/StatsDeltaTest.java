@@ -18,9 +18,9 @@ class StatsDeltaTest {
     void handlesU32WrapAndCountersANewerFirmwareAppends() {
         StatsDelta d = new StatsDelta();
         d.next(new long[] {0xffff_fffeL});
-        long[] next = new long[13];
+        long[] next = new long[14];
         next[0] = 1;
-        next[12] = 9;
-        assertEquals("rx_ok +3 counter12 +9", d.next(next));
+        next[13] = 9;
+        assertEquals("rx_ok +3 counter13 +9", d.next(next));
     }
 }

@@ -167,7 +167,8 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
 
 static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
 {
-    uint32_t v[12];
+    uint32_t v[13];
+    _Static_assert(sizeof v <= HL_MAX_REPLY, "STATS reply exceeds HL_MAX_REPLY");
     radio_rx_counts(&v[0], &v[1]);
     v[2] = c->stats.rx_unverified;
     v[3] = c->stats.beacons_answered;
@@ -179,7 +180,8 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     v[9] = c->stats.radio_errors;
     v[10] = c->link.crc_errors;
     v[11] = c->link.resyncs;
-    for (size_t i = 0; i < 12; i++)
+    v[12] = c->stats.acks_late;
+    for (size_t i = 0; i < 13; i++)
         put32(&reply[4 * i], v[i]);
     *reply_len = sizeof v;
 }
@@ -303,16 +305,63 @@ static void answer_beacon_request(struct coordinator *c, const uint8_t *frame, s
     hostlink_event(&c->link, HL_EV_BEACON_ANSWERED, ev, sizeof ev, NULL, 0);
 }
 
+/* Signed microseconds, for a timing log line. */
+static void log_us(struct log_line *l, int32_t rat)
+{
+    if (rat < 0) {
+        log_str(l, "-");
+        rat = -rat;
+    }
+    log_dec(l, (uint32_t)rat / (RAT_PER_MS / 1000u));
+    log_str(l, " us");
+}
+
+/* Sends the Enhanced ACK of a frame that ended at rat_end. */
+static bool send_ack(struct coordinator *c, uint8_t seq, const uint8_t dst[8], uint32_t rat_end)
+{
+    /* Phase: free-running timer in 320 us units, truncated to 16 bits. */
+    uint8_t ack[MAC_ENH_ACK_LEN];
+    mac_build_enh_ack(ack, seq, dst, c->eui, (uint16_t)(rat_end / 1280u));
+    uint32_t start = rat_end + ACK_DELAY_RAT;
+    uint32_t now = radio_rat_now();
+    int32_t slack = (int32_t)(start - now);
+    if (!radio_send_at(ack, sizeof ack, start)) {
+        answer_refused(c, "ack", seq);
+        return false;
+    }
+    c->stats.acks_sent++;
+    if (slack < 0) {
+        /* The radio sends it at once, maybe outside the device's window. */
+        c->stats.acks_late++;
+        struct log_line l = {.len = 0};
+        log_str(&l, "late ack seq ");
+        log_dec(&l, seq);
+        log_str(&l, ": posted ");
+        log_us(&l, (int32_t)(now - rat_end));
+        log_str(&l, " after the frame end");
+        log_send(c, &l);
+    }
+    return true;
+}
+
 static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_t *frame,
                          size_t len, int8_t rssi, uint32_t rat_end)
 {
     uint8_t scratch[MAC_MAX_FRAME];
     struct mac_data d;
     uint8_t flags = 0;
-    bool to_us = mac_data_addressed_to(frame, len, kind, c->eui);
+
+    /* ACK first, from the clear header: verifying the MIC takes longer than
+     * the device waits. A frame that then fails every key is ACKed all the
+     * same, as freedo's bridge does. */
+    uint8_t ack_seq, ack_dst[8];
+    if (mac_ack_request(frame, len, c->eui, &ack_seq, ack_dst) &&
+        send_ack(c, ack_seq, ack_dst, rat_end))
+        flags |= RXF_ACKED;
 
     /* A joiner talks the pairing key until d/pair; only an open window lets
      * that key in. */
+    bool to_us = mac_data_addressed_to(frame, len, kind, c->eui);
     bool ok = to_us && mac_open_data(frame, len, c->network_key, scratch, &d);
     if (to_us && !ok && pair_window_open(c)) {
         ok = mac_open_data(frame, len, PAIRING_KEY, scratch, &d);
@@ -321,17 +370,6 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
     if (!ok) {
         report_unverified(c, frame, len, rssi, rat_end);
         return;
-    }
-    if (d.ack_request) {
-        /* Phase: free-running timer in 320 us units, truncated to 16 bits. */
-        uint8_t ack[MAC_ENH_ACK_LEN];
-        mac_build_enh_ack(ack, d.seq, d.src, c->eui, (uint16_t)(rat_end / 1280u));
-        if (radio_send_at(ack, sizeof ack, rat_end + ACK_DELAY_RAT)) {
-            c->stats.acks_sent++;
-            flags |= RXF_ACKED;
-        } else {
-            answer_refused(c, "ack", d.seq);
-        }
     }
     if (d.broadcast)
         flags |= RXF_BROADCAST;
