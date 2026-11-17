@@ -45,7 +45,7 @@ reply (v0 accepts loss of an event; RX frames are retransmitted by devices).
 | Type | Name | Payload | Reply payload after status |
 |---|---|---|---|
 | `0x01` | `PING` | - | `fw_version` (u16), `rat` (u32, 4 MHz radio timer) |
-| `0x02` | `CONFIG` | `coord_eui` [8] (wire order; must end in `c5 1b 00`), `network_key` [16], `counter_floor` (u32), `channel_khz` (u32, 868300) | - |
+| `0x02` | `CONFIG` | `coord_eui` [8] (wire order; must end in `c5 1b 00`), `network_key` [16], `counter_floor` (u32), `channel_khz` (u32, e.g. 868335) | - |
 | `0x03` | `PAIR_WINDOW` | `seconds` (u16; 0 closes) | - |
 | `0x04` | `TX` | `flags` (u8), `dst_eui` [8] (ignored for broadcast), `packet` (6LoWPAN datagram) | `handle` (u8), `mac_seq` (u8), `counter` (u32) |
 | `0x05` | `STATS` | - | counters, u32 each, in the order below |

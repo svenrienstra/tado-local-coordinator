@@ -69,8 +69,11 @@ traffic, timed on this radio with a `make SNIFF=1` build:
   A full train takes 1.05 s. An anchored train is 21 frames, rendezvous 248 to
   0, centred on the device's sample; it reached the sensor 9 times out of 9.
 
-Still open:
+- Frequency: tuned in 5 kHz steps with the bridge on, this radio receives the
+  plant cleanly from 868.290 to 868.385 MHz (868.285 and 868.390: almost
+  nothing), so the plant sits at 868.335 MHz on our synthesizer, which the host
+  now sends in `CONFIG`. 868.300 was 10 kHz from the lower edge. The value
+  includes this board's crystal error: re-measure on another board.
 
-1. Frequency: 868.300 MHz from `CONFIG`. Below it we stop hearing the sensor,
-   so the devices may sit higher (freedo's CC1101 sits at 868.324 MHz).
-2. RX bandwidth code `rxBw = 0x55` (~137 kHz intended) and `biasMode`.
+Still open: the RX bandwidth code `rxBw = 0x55` (~137 kHz intended) and
+`biasMode`.

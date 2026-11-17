@@ -38,7 +38,11 @@ import tadocoord.link.SerialTransport;
  * </ul>
  */
 public final class Main {
-    static final int CHANNEL_KHZ = 868_300;
+    /**
+     * The middle of the band this board receives the plant cleanly in (868.290-868.385 MHz,
+     * measured 2026-11-17); it includes the board's crystal error.
+     */
+    static final int CHANNEL_KHZ = 868_335;
     /** Counter values reserved per run, as freedo does: never reuse one after a restart. */
     static final long COUNTER_BLOCK = 4096;
     /** serve runs for days; this outlasts that at a frame a second (32-bit counter: 4096 such runs). */
