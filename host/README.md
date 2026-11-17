@@ -30,6 +30,18 @@ valve's Router Solicitations with the doubled Router Advertisement, sends
 valve answers `2.04` under that key (`../docs/JOIN.md` step 7). It then serves
 `auth/token` and `time` for 30 s more.
 
+To keep joined devices served between tests, run
+
+```
+java -jar target/tado-coordinator-host.jar serve --port /dev/tty.usbserial-XXXX --state state
+```
+
+until Ctrl-C. It opens no pair window. It answers reports (`2.04`), `time`,
+`auth/token` and Router Solicitations, and sends an unsolicited Router
+Advertisement every 200-600 s, as the bridge does. A device that hears no
+advertisement for about 20 minutes stops reporting and only solicits, and it may
+not take an advertisement again for a long time.
+
 Every run writes `state/captures/hostlink-<UTC time>.log`: each host-link frame
 in both directions, timestamped, with frames the CC1312 could not open decoded
 from their MAC header (`data dst=… src=…`, `beacon-request`, `wake-up`, …). The
@@ -38,7 +50,8 @@ network key in `CONFIG` is redacted. The console also prints the CC1312's
 `rx_crc_fail` with no `rx_ok` means the PHY settings do not match the valves).
 
 `state/coordinator.properties` holds the coordinator EUI, the network key and
-the frame-counter floor (a block of 4096 is reserved per run). It is created on
+the frame-counter floor (a block of 4096 is reserved per `join` run, 2^20 per
+`serve` run). It is created on
 first run with mode 600; keep it — a device joined with that key needs it.
 
 ## Layout
@@ -49,4 +62,4 @@ first run with mode 600; keep it — a device joined with that key needs it.
 | `tadocoord.lowpan` | 6LoWPAN IPHC datagrams, IPv6 checksums |
 | `tadocoord.coap` | CoAP message codec |
 | `tadocoord.tado` | join resources: `d/pair`, `auth/token`, `time`, Router Advertisement |
-| `tadocoord.join` | `JoinSession`, the join state machine |
+| `tadocoord.join` | `JoinSession`: the join state machine, and the serving mode behind `serve` |

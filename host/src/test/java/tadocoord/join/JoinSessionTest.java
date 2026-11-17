@@ -203,6 +203,42 @@ class JoinSessionTest {
     }
 
     @Test
+    void servingSendsAnUnsolicitedRouterAdvertisementEvery200To600Seconds() throws Exception {
+        JoinSession serving = JoinSession.serving(coordinator, networkKey, radio, clock,
+                new SplittableRandom(1), msg -> { });
+        now = now.plus(JoinSession.RA_INTERVAL_MIN).minusSeconds(1);
+        serving.tick();
+        assertTrue(sent.isEmpty());
+
+        now = now.plus(JoinSession.RA_INTERVAL_MAX.minus(JoinSession.RA_INTERVAL_MIN)).plusSeconds(1);
+        serving.tick();
+        // One copy under the network key: with no pair window there is no pairing-key copy.
+        assertEquals(1, sent.size());
+        assertEquals(TxRequest.TRAIN_FULL, sent.get(0).flags());
+        assertTrue(sent.get(0).dst().isEmpty());
+        assertEquals(134, Datagram.parse(sent.get(0).packet(), coordinator, Optional.empty()).payload()[0] & 0xff);
+
+        serving.onEvent(new Event.TxDone(1, Event.TxDone.Result.SENT));
+        now = now.plus(JoinSession.RA_INTERVAL_MIN).minusSeconds(1);
+        serving.tick();
+        assertEquals(1, sent.size());
+        now = now.plus(JoinSession.RA_INTERVAL_MAX.minus(JoinSession.RA_INTERVAL_MIN)).plusSeconds(1);
+        serving.tick();
+        assertEquals(2, sent.size());
+    }
+
+    @Test
+    void servingAnswersASolicitationUnderTheNetworkKeyOnly() throws Exception {
+        JoinSession serving = JoinSession.serving(coordinator, networkKey, radio, clock,
+                new SplittableRandom(1), msg -> { });
+        byte[] rs = {0x7b, 0x3b, 58, 0x02, (byte) 133, 0, 0, 0, 0, 0, 0, 0};
+        serving.onEvent(new Event.Rx(false, true, false, -50, 1, joiner, 1, 0, rs));
+
+        assertEquals(1, sent.size());
+        assertEquals(TxRequest.TRAIN_FULL, sent.get(0).flags());
+    }
+
+    @Test
     void answersAFragmentedReportWith204() throws Exception {
         CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa302, new byte[] {7},
                 List.of(CoapMessage.path("d"), CoapMessage.path("SU0000000001"), CoapMessage.path("fw"),

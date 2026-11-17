@@ -41,13 +41,21 @@ public final class JoinSession {
      * plus queueing) is taken as having left the radio, so the session never stalls on it.
      */
     static final Duration TX_DONE_TIMEOUT = Duration.ofSeconds(5);
+    /**
+     * Unsolicited Router Advertisements go out every 200-600 s, as the bridge's (RFC 4861
+     * MaxRtrAdvInterval 600 s, MinRtrAdvInterval a third of it). A device that hears none for
+     * about 20 minutes stops reporting and only solicits.
+     */
+    static final Duration RA_INTERVAL_MIN = Duration.ofSeconds(200);
+    static final Duration RA_INTERVAL_MAX = Duration.ofSeconds(600);
 
     private static final int ICMP_ROUTER_SOLICITATION = 133;
     private static final int PUT = CoapMessage.code(0, 3);
     private static final int POST = CoapMessage.code(0, 2);
     private static final byte[] NO_IPV4 = new byte[4];
 
-    public enum State { WAITING_FOR_JOINER, PAIRING, JOINED, FAILED }
+    /** SERVING: no pair window; serves the devices already on the network. */
+    public enum State { WAITING_FOR_JOINER, PAIRING, JOINED, FAILED, SERVING }
 
     private final Eui coordinator;
     private final byte[] networkKey;
@@ -64,6 +72,7 @@ public final class JoinSession {
     private int raHandle = -1; // last RA copy in flight
     private Instant raSent = Instant.MIN;
     private Instant lastRaEnded = Instant.MIN;
+    private Instant nextRa;
 
     private int pairHandle = -1;
     private Instant pairSent = Instant.MIN;
@@ -81,6 +90,15 @@ public final class JoinSession {
         this.rng = rng;
         this.progress = progress;
         this.nextMid = rng.nextInt(0x10000);
+        scheduleNextRa();
+    }
+
+    /** A session with no pair window: it only keeps the joined devices served. */
+    public static JoinSession serving(Eui coordinator, byte[] networkKey, Radio radio, InstantSource clock,
+            RandomGenerator rng, Consumer<String> progress) {
+        JoinSession s = new JoinSession(coordinator, networkKey, radio, clock, rng, progress);
+        s.state = State.SERVING;
+        return s;
     }
 
     public State state() {
@@ -107,6 +125,9 @@ public final class JoinSession {
         if (pairHandle >= 0 && !now.isBefore(pairSent.plus(TX_DONE_TIMEOUT))) {
             progress.accept("no TX_DONE for d/pair, assuming it went out");
             pairLeftRadio();
+        }
+        if (raHandle < 0 && !now.isBefore(nextRa) && raAllowed()) {
+            sendRouterAdvert();
         }
         if (state == State.PAIRING && pairDeadline.isPresent() && !clock.instant().isBefore(pairDeadline.get())) {
             pairDeadline = Optional.empty();
@@ -260,9 +281,11 @@ public final class JoinSession {
     /** During the pair window every RA goes twice: network key with Frame Pending, then pairing key. */
     private void sendRouterAdvert() throws IOException {
         byte[] ra = TadoResources.routerAdvert(coordinator, NO_IPV4, NO_IPV4);
-        if (state == State.JOINED) {
+        scheduleNextRa();
+        if (state == State.JOINED || state == State.SERVING) {
             raHandle = send(TxRequest.broadcast(TxRequest.TRAIN_FULL, ra));
             raSent = clock.instant();
+            progress.accept("router advertisement sent");
             return;
         }
         send(TxRequest.broadcast(TxRequest.FRAME_PENDING | TxRequest.TRAIN_FULL, ra));
@@ -287,6 +310,11 @@ public final class JoinSession {
 
     private int send(TxRequest r) throws IOException {
         return radio.tx(r).handle();
+    }
+
+    private void scheduleNextRa() {
+        long spread = RA_INTERVAL_MAX.minus(RA_INTERVAL_MIN).toMillis();
+        nextRa = clock.instant().plus(RA_INTERVAL_MIN).plusMillis(rng.nextLong(spread + 1));
     }
 
     private boolean raAllowed() {

@@ -27,21 +27,28 @@ import tadocoord.link.StatsDelta;
 import tadocoord.link.SerialTransport;
 
 /**
- * M-1 / M2 bench tool: {@code join --port /dev/tty.usbserial-XXXX [--state DIR] [--window SECONDS]}.
+ * M-1 / M2 bench tool.
  *
- * <p>Opens a pair window on the CC1312 and walks one button-reset device through the join.
- * Exits 0 when the device answers {@code d/pair} under our network key.
+ * <ul>
+ *   <li>{@code join --port /dev/tty.usbserial-XXXX [--state DIR] [--window SECONDS]} opens a pair
+ *       window on the CC1312 and walks one button-reset device through the join. Exits 0 when the
+ *       device answers {@code d/pair} under our network key.
+ *   <li>{@code serve --port ... [--state DIR]} opens no pair window and runs until stopped: it
+ *       keeps the joined devices served (Router Advertisements, reports, {@code time}).
+ * </ul>
  */
 public final class Main {
     static final int CHANNEL_KHZ = 868_300;
     /** Counter values reserved per run, as freedo does: never reuse one after a restart. */
     static final long COUNTER_BLOCK = 4096;
+    /** serve runs for days; this outlasts that at a frame a second (32-bit counter: 4096 such runs). */
+    static final long SERVE_COUNTER_BLOCK = 1L << 20;
     static final Duration STATS_INTERVAL = Duration.ofSeconds(5);
     private static final DateTimeFormatter FILE_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC);
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 1 || !args[0].equals("join")) {
+        if (args.length < 1 || !(args[0].equals("join") || args[0].equals("serve"))) {
             usage();
         }
         String port = null;
@@ -55,14 +62,16 @@ public final class Main {
                 default -> usage();
             }
         }
-        if (port == null) {
+        if (port == null || (args[0].equals("join") && window <= 0)) {
             usage();
         }
-        System.exit(join(port, stateDir, window));
+        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0));
     }
 
-    private static int join(String port, Path stateDir, int windowSeconds) throws Exception {
-        Identity id = Identity.loadOrCreate(stateDir.resolve("coordinator.properties"));
+    /** With windowSeconds 0, serves without a pair window until stopped. */
+    private static int run(String port, Path stateDir, int windowSeconds) throws Exception {
+        Identity id = Identity.loadOrCreate(stateDir.resolve("coordinator.properties"),
+                windowSeconds == 0 ? SERVE_COUNTER_BLOCK : COUNTER_BLOCK);
         log("coordinator " + id.eui + ", counter floor " + id.counterFloor);
 
         LinkedBlockingQueue<Event> events = new LinkedBlockingQueue<>();
@@ -74,12 +83,19 @@ public final class Main {
             log("firmware v" + pong.firmwareVersion());
             link.configure(id.eui, id.networkKey, id.counterFloor, CHANNEL_KHZ);
 
+            if (windowSeconds == 0) {
+                JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
+                        new SecureRandom(), Main::log);
+                log("serving the joined devices; stop with Ctrl-C");
+                runWindow(link, session, events, Instant.MAX);
+                return 0;
+            }
             JoinSession session = new JoinSession(id.eui, id.networkKey, link, Clock.systemUTC(),
                     new SecureRandom(), Main::log);
             link.pairWindow(windowSeconds);
             log("pair window open for " + windowSeconds + " s: long-press the device button now");
             try {
-                runWindow(link, session, events, windowSeconds);
+                runWindow(link, session, events, Instant.now().plusSeconds(windowSeconds));
             } finally {
                 closeWindow(link);
             }
@@ -90,6 +106,11 @@ public final class Main {
     /** Coordinator EUI, network key and counter floor, persisted across runs. */
     record Identity(Eui eui, byte[] networkKey, long counterFloor) {
         static Identity loadOrCreate(Path file) throws IOException {
+            return loadOrCreate(file, COUNTER_BLOCK);
+        }
+
+        /** Reserves {@code block} frame counter values for this run. */
+        static Identity loadOrCreate(Path file, long block) throws IOException {
             Properties p = new Properties();
             if (Files.exists(file)) {
                 try (InputStream in = Files.newInputStream(file)) {
@@ -106,7 +127,7 @@ public final class Main {
             Identity id = new Identity(Eui.ofHex(p.getProperty("coordinator_eui")),
                     Hex.parse(p.getProperty("network_key")), Long.parseLong(p.getProperty("counter_floor")));
             // Reserve this run's block before the first frame goes out.
-            p.setProperty("counter_floor", Long.toString(id.counterFloor + COUNTER_BLOCK));
+            p.setProperty("counter_floor", Long.toString(id.counterFloor + block));
             // Owner-only from creation: the key must never sit in a readable file, even briefly.
             if (Files.notExists(file.getParent())) {
                 Files.createDirectories(file.getParent(), ownerOnly("rwx------"));
@@ -129,8 +150,7 @@ public final class Main {
     }
 
     private static void runWindow(HostLink link, JoinSession session, LinkedBlockingQueue<Event> events,
-            int windowSeconds) throws IOException, InterruptedException {
-        Instant end = Instant.now().plusSeconds(windowSeconds);
+            Instant end) throws IOException, InterruptedException {
         StatsDelta stats = new StatsDelta();
         boolean statsSupported = true;
         Instant nextStats = Instant.now();
@@ -189,6 +209,7 @@ public final class Main {
 
     private static void usage() {
         System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>]");
+        System.err.println("       serve --port <serial device> [--state <dir>]");
         System.exit(2);
     }
 }
