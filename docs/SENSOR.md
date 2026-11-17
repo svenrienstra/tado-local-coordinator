@@ -77,6 +77,14 @@ them (`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
    `h/<home>/z/11/act` `40a0`=100 % and `z/p` with 100 %, and the display showed
    21. Set back to 18.00 the same way.
 
+6. **A setpoint set on the sensor itself** (21, at 16:01) is a device overlay,
+   as freedo documents for a valve's wheel: `PUT h/<home>/z/11/overlay` with
+   `6280`=2100, `6240`=2 (manual), `6260`=1 (on), then `h/<home>/z/11/act`
+   `40a0`=94 % and `z/p` with 94 % within 1.4 s. The host answers `2.04` but
+   does not keep it yet, so our zone state (`h/<home>/z/11/s`) still says 18.00
+   with no overlay; keeping overlays is M3 (the setpoint in Home Assistant
+   following the device).
+
 No motor, so nothing to home. A wrong document is fixed by serving a corrected
 one under a new ETag, or `POST d/reboot` (it keeps its key); the last resort is
 pairing it again.
