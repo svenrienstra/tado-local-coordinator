@@ -43,7 +43,39 @@ answers are the device's, decoded with freedo's tag tables (`PROTOCOL.md`).
 Values are big-endian; a version is `major<<6 | minor`. The firmware is the same
 215 family as freedo's valves and wall thermostat.
 
-## Open
+## Next: config and zone (plan, not yet tried)
 
-- What to answer `GET d/<serial>/config`, and the zone document that makes it
-  the measuring device of a zone.
+freedo does not support the sensor (no capture of one; its serial pattern even
+skips `SU`), so this is inferred from how its valves and wall thermostat work
+(`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
+`build_zone_config.go`; `PROTOCOL.md` 489-618 and 1014-1263).
+
+1. **Answer `GET d/<serial>/config`.** Today it gets no answer; freedo answers a
+   device it holds no document for with `5.03`. A thermostat holds back its other
+   uplinks until it gets a `2.05`/`2.03`, which may be why the sensor keeps
+   asking. The answer: ACK `2.05` with an 8-byte ETag (option 4) and Block2
+   (option 23, 128-byte blocks, M set while more follow), no Content-Format, and
+   TLVs (tag 2 B, length 1 B, value BE, each value at most 8 bytes):
+   - `0143`=00 (trace off)
+   - `015c`= our **home id**, u32, not 0. A device applies nothing with home 0
+     and uses it in every `h/<home>/...` path, in decimal.
+   - `02b3`=00 (no offline schedule; 1 makes it fetch `h/<home>/z/N/sched`)
+   - `015e`= one `[role][zone]` record per zone, the whole table in one transfer:
+     `0d0b` makes it the elected owner (bit 3) of zone 11
+   - `0158`=`0200` (notify on a remote overlay change)
+   - leave out `015d` (interface module id: unknown for a sensor, and a wrong one
+     breaks valves and thermostats), `0140` (its own offset), `0149` and `021a`
+     (valve only), and `015a` (the ETag never goes in a GET answer).
+   A matching ETag in its request gets `2.03` with no body.
+2. **Then it should `GET h/<home>/z/11/config`**, the zone document. Make it the
+   owner and measuring endpoint: `6020`=1, `63e0`=1, `63a0`=`<sensor>/z/s`,
+   `8400`=`<sensor>/z/p`, `8000`=`<sensor>/z/s`, `6040`=`<sensor>/z/p`, PID
+   `6080`=1000, `60a0`=500, `60c0`=1500, `60e0`=1, `62c0`=900, `6380`=900. A URI
+   is `coap://[fe80:0:0:0:<EUI-64 with the U/L bit flipped, lowercase hex>]/z/<res>`.
+   Same ETag/Block2 shape; an unknown zone gets `4.04`.
+3. **Watch** for `PUT z/p?lid=11`, `h/<home>/z/11/act` and the other reports a
+   valve sends after this, and for the config retries stopping.
+
+Risks: no motor to home on a sensor. A wrong document is fixed by serving a
+corrected one under a new ETag, or `POST d/reboot` (it keeps its key); the last
+resort is pairing it again.
