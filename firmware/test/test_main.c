@@ -84,15 +84,16 @@ static int job_aborts;
 static uint16_t job_wake_frames;
 static uint8_t job_short[2];
 static uint8_t job_token; /* of the last job started, as the radio reports it */
-static bool radio_busy; /* radio_send_at refuses, as during a job */
+static bool radio_refuses; /* radio_send_at refuses, as during a job */
 
 uint32_t platform_ms(void) { return now_ms; }
 uint32_t radio_rat_now(void) { return now_rat; }
-void radio_set_channel(uint32_t khz) { (void)khz; }
+static uint32_t channel_khz;
+void radio_set_channel(uint32_t khz) { channel_khz = khz; }
 
 bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start)
 {
-    if (radio_busy)
+    if (radio_refuses)
         return false;
     memcpy(sent_frame, frame, len);
     sent_len = len;
@@ -116,6 +117,8 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frame
     return true;
 }
 
+static bool radio_on_air; /* radio_busy(): a frame on air or posted */
+bool radio_busy(void) { return radio_on_air; }
 unsigned radio_abort_job(void)
 {
     job_aborts++;
@@ -140,7 +143,8 @@ static void reset_stubs(void)
     host_out_len = 0;
     sent_len = 0;
     sends = jobs = job_aborts = 0;
-    radio_busy = false;
+    radio_refuses = false;
+    radio_on_air = false;
 }
 
 /* Finds the n-th frame of a given type in host_out; returns its payload. */
@@ -397,7 +401,7 @@ static void test_coordinator_beacon_window(void)
 
     /* Window closed: no answer, the request is reported as unverified. */
     reset_stubs();
-    coord_on_rx(&c, req->data, req->len, -40, 100000);
+    coord_on_rx(&c, req->data, req->len, -40, 100000, 0);
     CHECK(sends == 0 && host_frame(HL_EV_RX_UNVERIFIED, 0, &len) != NULL);
 
     /* Window open: the beacon goes out 3 ms after the request, under the
@@ -405,7 +409,7 @@ static void test_coordinator_beacon_window(void)
     reset_stubs();
     uint8_t secs[2] = {120, 0};
     host_request(&c, 2, HL_PAIR_WINDOW, secs, 2);
-    coord_on_rx(&c, req->data, req->len, -40, 100000);
+    coord_on_rx(&c, req->data, req->len, -40, 100000, 0);
     CHECK(sends == 1 && sent_at == 100000 + BEACON_DELAY_RAT);
     uint8_t want[MAC_ENH_BEACON_LEN];
     mac_build_enh_beacon(want, PAIRING_KEY, 0, V("in.joiner_eui")->data, V("in.coord_eui")->data,
@@ -416,21 +420,21 @@ static void test_coordinator_beacon_window(void)
 
     /* Radio busy with a job: no beacon, no event, seq and counter unspent. */
     reset_stubs();
-    radio_busy = true;
+    radio_refuses = true;
     uint8_t seq = c.seq;
     uint32_t counter = c.counter;
-    coord_on_rx(&c, req->data, req->len, -40, 150000);
+    coord_on_rx(&c, req->data, req->len, -40, 150000, 0);
     CHECK(host_frame(HL_EV_BEACON_ANSWERED, 0, &len) == NULL);
     CHECK(c.seq == seq && c.counter == counter);
-    radio_busy = false;
-    coord_on_rx(&c, req->data, req->len, -40, 160000);
+    radio_refuses = false;
+    coord_on_rx(&c, req->data, req->len, -40, 160000, 0);
     ev = host_frame(HL_EV_BEACON_ANSWERED, 0, &len);
     CHECK(sends == 1 && ev && ev[13] == seq);
 
     /* The window closes on its own after 120 s. */
     reset_stubs();
     now_ms += 120 * 1000;
-    coord_on_rx(&c, req->data, req->len, -40, 200000);
+    coord_on_rx(&c, req->data, req->len, -40, 200000, 0);
     CHECK(sends == 0);
 }
 
@@ -449,14 +453,14 @@ static void test_coordinator_key_fallback(void)
      * though ACKed, since the ACK goes out before any key is tried. */
     size_t n = mac_seal_unicast(f, PAIRING_KEY, false, 9, coord, joiner, 3, pkt, sizeof pkt);
     reset_stubs();
-    coord_on_rx(&c, f, n, -50, 4000);
+    coord_on_rx(&c, f, n, -50, 4000, 0);
     CHECK(host_frame(HL_EV_RX, 0, &len) == NULL && sends == 1);
 
     /* Window open: accepted, flagged as pairing key, and Enhanced-ACKed. */
     uint8_t secs[2] = {60, 0};
     host_request(&c, 2, HL_PAIR_WINDOW, secs, 2);
     reset_stubs();
-    coord_on_rx(&c, f, n, -50, 4000);
+    coord_on_rx(&c, f, n, -50, 4000, 0);
     const uint8_t *ev = host_frame(HL_EV_RX, 0, &len);
     CHECK(ev && (ev[0] & 0x01) && (ev[0] & 0x04) && ev[2] == 9 &&
           memcmp(&ev[3], joiner, 8) == 0 && ev[11] == 3 && len == 19 + sizeof pkt &&
@@ -469,25 +473,25 @@ static void test_coordinator_key_fallback(void)
     n = mac_seal_unicast(f, V("in.network_key")->data, false, 10, coord, joiner, 4, pkt,
                          sizeof pkt);
     reset_stubs();
-    coord_on_rx(&c, f, n, -50, 5000);
+    coord_on_rx(&c, f, n, -50, 5000, 0);
     ev = host_frame(HL_EV_RX, 0, &len);
     CHECK(ev && !(ev[0] & 0x01));
 
     /* A repeat of it (same MAC seq, as a device retries a frame it saw no ACK
      * for) is ACKed again but not passed on; a new seq is. */
     reset_stubs();
-    coord_on_rx(&c, f, n, -50, 5200);
+    coord_on_rx(&c, f, n, -50, 5200, 0);
     CHECK(sends == 1 && host_frame(HL_EV_RX, 0, &len) == NULL && c.stats.rx_duplicates == 1);
     now_ms += DEDUP_WINDOW_MS;
-    coord_on_rx(&c, f, n, -50, 5300);
+    coord_on_rx(&c, f, n, -50, 5300, 0);
     CHECK(host_frame(HL_EV_RX, 0, &len) != NULL); /* outside the window: a new frame */
 
     /* An ACK the busy radio refuses is not reported as sent. */
     n = mac_seal_unicast(f, V("in.network_key")->data, false, 11, coord, joiner, 5, pkt,
                          sizeof pkt);
     reset_stubs();
-    radio_busy = true;
-    coord_on_rx(&c, f, n, -50, 5500);
+    radio_refuses = true;
+    coord_on_rx(&c, f, n, -50, 5500, 0);
     ev = host_frame(HL_EV_RX, 0, &len);
     CHECK(ev && !(ev[0] & 0x04));
 
@@ -498,7 +502,7 @@ static void test_coordinator_key_fallback(void)
     n = mac_seal_unicast(f, V("in.network_key")->data, false, 11, other, joiner, 5, pkt,
                          sizeof pkt);
     reset_stubs();
-    coord_on_rx(&c, f, n, -50, 6000);
+    coord_on_rx(&c, f, n, -50, 6000, 0);
     CHECK(sends == 0 && host_frame(HL_EV_RX, 0, &len) == NULL);
 }
 
@@ -539,10 +543,10 @@ static void test_coordinator_tx(void)
     coord_on_job_sent(&c, job_token, true);
     uint8_t ack[MAC_ENH_ACK_LEN];
     mac_build_enh_ack(ack, 0x2f, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0); /* wrong seq: ignored */
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0); /* wrong seq: ignored */
     CHECK(host_frame(HL_EV_TX_DONE, 0, &len) == NULL);
     mac_build_enh_ack(ack, 0x30, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0);
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0);
     const uint8_t *ev = host_frame(HL_EV_TX_DONE, 0, &len);
     CHECK(ev && ev[0] == handle && ev[1] == TX_ACKED);
 
@@ -588,7 +592,7 @@ static void test_coordinator_anchor(void)
     now_rat = ack_end;
     now_ms += 1030;
     mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
-    coord_on_rx(&c, ack, sizeof ack, -50, ack_end);
+    coord_on_rx(&c, ack, sizeof ack, -50, ack_end, 0);
     const uint8_t *ev = host_frame(HL_EV_TX_DONE, 0, &len);
     CHECK(ev && ev[1] == TX_ACKED);
     uint32_t sample = ack_end - 100u * CSL_UNIT_RAT;
@@ -623,7 +627,7 @@ static void test_coordinator_anchor(void)
     ack_end = now_rat + 4100000u;
     now_rat = ack_end;
     mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
-    coord_on_rx(&c, ack, sizeof ack, -50, ack_end);
+    coord_on_rx(&c, ack, sizeof ack, -50, ack_end, 0);
     reset_stubs();
     host_request(&c, 4, HL_TX, tx, sizeof tx);
     coord_poll(&c);
@@ -639,12 +643,105 @@ static void test_coordinator_anchor(void)
     /* A full train is still a full train when the host asks for one. */
     coord_on_job_sent(&c, job_token, true);
     mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
-    coord_on_rx(&c, ack, sizeof ack, -50, now_rat);
+    coord_on_rx(&c, ack, sizeof ack, -50, now_rat, 0);
     reset_stubs();
     tx[0] = 1 << 4;
     host_request(&c, 5, HL_TX, tx, sizeof tx);
     coord_poll(&c);
     CHECK(jobs == 1 && job_wake_frames == MAC_TRAIN_FULL);
+}
+
+static bool log_is(int n, const char *text);
+
+/* Sends n verified frames from src carrying the RF core's offset v. */
+static void frames_with_offset(struct coordinator *c, const uint8_t src[8], int n, int8_t v)
+{
+    static uint8_t seq;
+    static uint32_t counter = 100;
+    static const uint8_t pkt[2] = {0x7e, 0x33};
+    uint8_t f[MAC_MAX_FRAME];
+    for (int i = 0; i < n; i++) {
+        size_t len = mac_seal_unicast(f, V("in.network_key")->data, false, seq++,
+                                      V("in.coord_eui")->data, src, counter++, pkt, sizeof pkt);
+        coord_on_rx(c, f, len, -50, 0, v);
+    }
+}
+
+/* The radio follows our devices' carrier, read from the RF core's offset
+ * estimate (390.625 Hz a unit). */
+static void test_coordinator_tune(void)
+{
+    static struct coordinator c;
+    uint8_t a[8], b[8], d[8];
+    size_t len;
+    memcpy(a, V("in.joiner_eui")->data, 8);
+    memcpy(b, a, 8);
+    b[0] ^= 1;
+    memcpy(d, a, 8);
+    d[0] ^= 2;
+    coord_init(&c);
+    now_ms = 1000;
+    now_rat = 0; /* the frames end at 0: their ACKs are on time */
+    configure(&c, 0);
+    CHECK(channel_khz == 868300);
+
+    /* 16 readings of +26 units (10156 Hz) from one device: logged, then the
+     * radio moves 10 kHz up when it is free. */
+    reset_stubs();
+    frames_with_offset(&c, a, 15, 26);
+    CHECK(host_frame(HL_EV_LOG, 0, &len) == NULL);
+    frames_with_offset(&c, a, 1, 26);
+    CHECK(log_is(0, "carrier offset 10156 Hz over 1 devices"));
+    radio_on_air = true;
+    coord_poll(&c);
+    CHECK(channel_khz == 868300);
+    radio_on_air = false;
+    coord_poll(&c);
+    CHECK(channel_khz == 868310 && log_is(1, "retuned to 868310 kHz (10 from CONFIG)"));
+
+    /* Inside the deadband: logged, no retune. */
+    reset_stubs();
+    frames_with_offset(&c, a, 16, 8);
+    coord_poll(&c);
+    CHECK(log_is(0, "carrier offset 3125 Hz over 1 devices") && channel_khz == 868310);
+
+    /* At most one retune per TUNE_INTERVAL_MS. */
+    reset_stubs();
+    frames_with_offset(&c, a, 16, -26);
+    coord_poll(&c);
+    CHECK(channel_khz == 868310);
+    now_ms += TUNE_INTERVAL_MS;
+    coord_poll(&c);
+    CHECK(channel_khz == 868300);
+
+    /* The median of the devices' means: 0, 10156 and 11718 Hz give 10156. A
+     * frame no key opens, as from another network, does not count, nor does a
+     * reading at the estimator's limit. */
+    reset_stubs();
+    static const uint8_t junk[30] = {0x69, 0xec};
+    for (int i = 0; i < 16; i++)
+        coord_on_rx(&c, junk, sizeof junk, -50, 0, 60);
+    frames_with_offset(&c, a, 8, TUNE_CLIP);
+    CHECK(host_frame(HL_EV_LOG, 0, &len) == NULL);
+    frames_with_offset(&c, a, 4, 0);
+    frames_with_offset(&c, b, 4, 26);
+    frames_with_offset(&c, d, 8, 30);
+    CHECK(log_is(0, "carrier offset 10156 Hz over 3 devices"));
+    now_ms += TUNE_INTERVAL_MS;
+    coord_poll(&c);
+    CHECK(channel_khz == 868310);
+
+    /* Never more than TUNE_MAX_HZ from the CONFIG frequency. */
+    for (int i = 0; i < 4; i++) {
+        frames_with_offset(&c, a, 16, 100);
+        now_ms += TUNE_INTERVAL_MS;
+        coord_poll(&c);
+    }
+    CHECK(channel_khz == 868300 + TUNE_MAX_HZ / 1000);
+
+    /* CONFIG starts over from its own frequency. */
+    config_request(&c, 0x11, 0);
+    CHECK(channel_khz == 868300 && c.tune_khz == 0);
 }
 
 static void test_coordinator_job_recovery(void)
@@ -699,7 +796,7 @@ static void test_coordinator_job_recovery(void)
     reset_stubs();
     uint8_t ack[MAC_ENH_ACK_LEN];
     mac_build_enh_ack(ack, c.queue[0].seq, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0);
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0);
     coord_on_job_sent(&c, job_token, true);
     now_ms += ACK_WAIT_MS;
     coord_poll(&c);
@@ -714,7 +811,7 @@ static void test_coordinator_job_recovery(void)
     coord_poll(&c);
     uint8_t token_a = job_token;
     mac_build_enh_ack(ack, c.queue[0].seq, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0);
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0);
     coord_poll(&c);
     CHECK(jobs == 2 && job_token != token_a);
     uint8_t b = c.queue[0].handle;
@@ -724,7 +821,7 @@ static void test_coordinator_job_recovery(void)
     CHECK(c.job_on_air && !c.awaiting_ack && host_frame(HL_EV_TX_DONE, 1, &len) == NULL);
     coord_on_job_sent(&c, job_token, true);
     mac_build_enh_ack(ack, c.queue[0].seq, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0);
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0);
     ev = host_frame(HL_EV_TX_DONE, 1, &len);
     CHECK(ev && ev[0] == b && ev[1] == TX_ACKED);
 }
@@ -789,7 +886,7 @@ static void test_stats_and_log(void)
      * heard before CONFIG counts as unverified. */
     rf_rx_ok = 7;
     rf_rx_crc_fail = 0x12345678;
-    coord_on_rx(&c, req->data, req->len, -40, 0);
+    coord_on_rx(&c, req->data, req->len, -40, 0, 0);
     CHECK(stat(&c, S_RX_OK) == 7 && stat(&c, S_RX_CRC_FAIL) == 0x12345678);
     CHECK(stat(&c, S_RX_UNVERIFIED) == 1 && stat(&c, S_LINK_RESYNCS) == 0);
 
@@ -806,11 +903,11 @@ static void test_stats_and_log(void)
     configure(&c, 100);
     uint8_t secs[2] = {60, 0};
     host_request(&c, 3, HL_PAIR_WINDOW, secs, 2);
-    coord_on_rx(&c, req->data, req->len, -40, 1000);
+    coord_on_rx(&c, req->data, req->len, -40, 1000, 0);
     CHECK(stat(&c, S_BEACONS) == 1 && stat(&c, S_REFUSED) == 0);
     reset_stubs();
-    radio_busy = true;
-    coord_on_rx(&c, req->data, req->len, -40, 2000);
+    radio_refuses = true;
+    coord_on_rx(&c, req->data, req->len, -40, 2000, 0);
     CHECK(logs("refused beacon seq=") == 1);
     CHECK(stat(&c, S_BEACONS) == 1 && stat(&c, S_REFUSED) == 1);
 
@@ -821,17 +918,17 @@ static void test_stats_and_log(void)
                                 joiner, 1, pkt, sizeof pkt);
     reset_stubs();
     now_rat = 3000 + 400; /* the main loop sees the frame 100 us after it ended */
-    coord_on_rx(&c, f, n, -50, 3000);
-    radio_busy = true;
-    coord_on_rx(&c, f, n, -50, 4000);
+    coord_on_rx(&c, f, n, -50, 3000, 0);
+    radio_refuses = true;
+    coord_on_rx(&c, f, n, -50, 4000, 0);
     CHECK(log_is(0, "refused ack seq=9"));
     CHECK(stat(&c, S_ACKS) == 1 && stat(&c, S_REFUSED) == 2 && stat(&c, S_ACKS_LATE) == 0);
-    radio_busy = false;
+    radio_refuses = false;
 
     /* An ACK posted after its start time still goes out, late, and is counted. */
     reset_stubs();
     now_rat = 6000 + ACK_DELAY_RAT + 8;
-    coord_on_rx(&c, f, n, -50, 6000);
+    coord_on_rx(&c, f, n, -50, 6000, 0);
     char late[64];
     snprintf(late, sizeof late, "late ack seq 9: posted %u us after the frame end",
              (unsigned)(ACK_DELAY_RAT + 8) / 4u);
@@ -849,7 +946,7 @@ static void test_stats_and_log(void)
     coord_on_job_sent(&c, job_token, true);
     uint8_t ack[MAC_ENH_ACK_LEN];
     mac_build_enh_ack(ack, c.queue[0].seq, V("in.coord_eui")->data, joiner, 0);
-    coord_on_rx(&c, ack, sizeof ack, -50, 0);
+    coord_on_rx(&c, ack, sizeof ack, -50, 0, 0);
     host_request(&c, 5, HL_TX, tx, sizeof tx);
     coord_poll(&c);
     uint8_t h = c.queue[0].handle;
@@ -906,6 +1003,7 @@ int main(int argc, char **argv)
     test_coordinator_key_fallback();
     test_coordinator_tx();
     test_coordinator_anchor();
+    test_coordinator_tune();
     test_coordinator_job_recovery();
     test_stats_and_log();
     printf("%d checks, %d failures\n", checks, failures);

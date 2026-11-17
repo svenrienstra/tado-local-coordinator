@@ -218,7 +218,12 @@ static enum hl_status do_config(struct coordinator *c, const uint8_t *p, size_t 
      * no job. A job waiting for its ACK times out as usual. */
     if (c->job_on_air && !c->awaiting_ack)
         tx_done(c, TX_RADIO_ERROR);
-    radio_set_channel(get32(&p[28]));
+    c->channel_khz = get32(&p[28]);
+    c->tune_khz = 0;
+    c->tune_pending = c->tuned_once = false;
+    memset(c->tune, 0, sizeof c->tune);
+    c->tune_readings = 0;
+    radio_set_channel(c->channel_khz);
     c->configured = true;
     return HL_OK;
 }
@@ -472,8 +477,100 @@ static bool repeated_unicast(struct coordinator *c, const struct mac_data *d)
     return false;
 }
 
+static int32_t abs32(int32_t v) { return v < 0 ? -v : v; }
+
+static void log_signed(struct log_line *l, int32_t v)
+{
+    if (v < 0)
+        log_str(l, "-");
+    log_dec(l, (uint32_t)abs32(v));
+}
+
+/* A carrier offset reading from one of our devices. */
+static void tune_note(struct coordinator *c, const uint8_t short_addr[2], int8_t v)
+{
+    if (v >= TUNE_CLIP || v <= -TUNE_CLIP)
+        return;
+    struct tune_source *s = NULL, *unused = NULL;
+    for (size_t i = 0; i < TUNE_SOURCES; i++) {
+        struct tune_source *t = &c->tune[i];
+        if (t->used && memcmp(t->short_addr, short_addr, 2) == 0)
+            s = t;
+        else if (!t->used && unused == NULL)
+            unused = t;
+    }
+    if (s == NULL) {
+        if (unused == NULL)
+            return;
+        s = unused;
+        s->used = true;
+        memcpy(s->short_addr, short_addr, 2);
+    }
+    s->sum += v;
+    s->n++;
+    if (++c->tune_readings < TUNE_WINDOW)
+        return;
+
+    int32_t means[TUNE_SOURCES];
+    size_t m = 0;
+    for (size_t i = 0; i < TUNE_SOURCES; i++) {
+        struct tune_source *t = &c->tune[i];
+        if (t->used && t->n >= TUNE_MIN_PER_SOURCE)
+            means[m++] = t->sum * FREQ_OFFSET_UNIT_HZ_X64 / 64 / (int32_t)t->n;
+    }
+    memset(c->tune, 0, sizeof c->tune);
+    c->tune_readings = 0;
+    if (m == 0)
+        return;
+    for (size_t i = 1; i < m; i++)
+        for (size_t j = i; j > 0 && means[j - 1] > means[j]; j--) {
+            int32_t x = means[j];
+            means[j] = means[j - 1];
+            means[j - 1] = x;
+        }
+    int32_t median = m % 2 ? means[m / 2] : (means[m / 2 - 1] + means[m / 2]) / 2;
+    struct log_line l = {.len = 0};
+    log_str(&l, "carrier offset ");
+    log_signed(&l, median);
+    log_str(&l, " Hz over ");
+    log_dec(&l, (uint32_t)m);
+    log_str(&l, " devices");
+    log_send(c, &l);
+    if (abs32(median) < TUNE_DEADBAND_HZ)
+        return;
+    c->tune_step_khz = (median + (median > 0 ? 500 : -500)) / 1000;
+    c->tune_pending = true;
+}
+
+/* Follows the devices' carrier when an offset is pending and the radio is free. */
+static void tune_apply(struct coordinator *c)
+{
+    if (!c->tune_pending || c->job_on_air || radio_busy() || pair_window_open(c) ||
+        (c->tuned_once && before(platform_ms(), c->tune_last_ms + TUNE_INTERVAL_MS)))
+        return;
+    int32_t k = c->tune_khz + c->tune_step_khz;
+    const int32_t max_khz = TUNE_MAX_HZ / 1000;
+    k = k > max_khz ? max_khz : k < -max_khz ? -max_khz : k;
+    c->tune_pending = false;
+    if (k == c->tune_khz)
+        return;
+    c->tune_khz = k;
+    c->tuned_once = true;
+    c->tune_last_ms = platform_ms();
+    memset(c->tune, 0, sizeof c->tune); /* readings from before are off now */
+    c->tune_readings = 0;
+    radio_set_channel((uint32_t)((int32_t)c->channel_khz + k));
+    struct log_line l = {.len = 0};
+    log_str(&l, "retuned to ");
+    log_dec(&l, (uint32_t)((int32_t)c->channel_khz + k));
+    log_str(&l, " kHz (");
+    log_signed(&l, k);
+    log_str(&l, " from CONFIG)");
+    log_send(c, &l);
+}
+
 static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_t *frame,
-                         size_t len, int8_t rssi, uint32_t rat_end)
+                         size_t len, int8_t rssi, uint32_t rat_end, int8_t freq_offset)
 {
     uint8_t scratch[MAC_MAX_FRAME];
     struct mac_data d;
@@ -499,6 +596,11 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
         report_unverified(c, frame, len, rssi, rat_end);
         return;
     }
+    if (!(flags & RXF_PAIRING_KEY)) {
+        uint8_t short_addr[2];
+        mac_short_addr(d.src, short_addr);
+        tune_note(c, short_addr, freq_offset);
+    }
     if (d.broadcast)
         flags |= RXF_BROADCAST;
     else if (repeated_unicast(c, &d)) {
@@ -517,7 +619,7 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
 }
 
 static void receive_ack(struct coordinator *c, const uint8_t *frame, size_t len, int8_t rssi,
-                        uint32_t rat_end)
+                        uint32_t rat_end, int8_t freq_offset)
 {
     uint8_t seq, dst[8];
     if (!mac_parse_enh_ack(frame, len, &seq, dst)) {
@@ -530,6 +632,7 @@ static void receive_ack(struct coordinator *c, const uint8_t *frame, size_t len,
     if (c->job_on_air && c->queue[0].unicast && seq == c->queue[0].seq &&
         memcmp(dst, c->eui, 8) == 0) {
         anchor_store(c, c->queue[0].dst_short, rat_past64(c, rat_end), mac_enh_ack_phase(frame));
+        tune_note(c, c->queue[0].dst_short, freq_offset);
         tx_done(c, TX_ACKED);
     }
 #ifdef SNIFF
@@ -539,7 +642,7 @@ static void receive_ack(struct coordinator *c, const uint8_t *frame, size_t len,
 }
 
 void coord_on_rx(struct coordinator *c, const uint8_t *frame, size_t len, int8_t rssi,
-                 uint32_t rat_end)
+                 uint32_t rat_end, int8_t freq_offset)
 {
     /* Nothing opens before CONFIG; counted, not reported. */
     if (!c->configured) {
@@ -553,10 +656,10 @@ void coord_on_rx(struct coordinator *c, const uint8_t *frame, size_t len, int8_t
         break;
     case MAC_KIND_UNICAST:
     case MAC_KIND_BROADCAST:
-        receive_data(c, kind, frame, len, rssi, rat_end);
+        receive_data(c, kind, frame, len, rssi, rat_end, freq_offset);
         break;
     case MAC_KIND_ENH_ACK:
-        receive_ack(c, frame, len, rssi, rat_end);
+        receive_ack(c, frame, len, rssi, rat_end, freq_offset);
         break;
     default:
         report_unverified(c, frame, len, rssi, rat_end);
@@ -606,6 +709,7 @@ void coord_poll(struct coordinator *c)
         log_send(c, &l);
         tx_done(c, TX_RADIO_ERROR);
     }
+    tune_apply(c);
     uint64_t now = rat_now64(c);
     if (c->queue_len > 0 && !c->job_on_air) {
         struct tx_job *j = &c->queue[0];

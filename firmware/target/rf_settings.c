@@ -29,6 +29,10 @@ static uint32_t overrides[] __attribute__((aligned(4))) = {
     ADI_HALFREG_OVERRIDE(0, 61, 0xF, 0xD),
     /* TX: wait time before turning off the ramp 0x1A. */
     HW_REG_OVERRIDE(0x6028, 0x001A),
+    /* RX: append the frequency offset estimate to each packet, a signed byte
+     * before the RSSI: offset = value / 64 x deviation (TI, E2E 820991; rev E
+     * silicon and later). */
+    (uint32_t)0x000488E3,
     (uint32_t)0xFFFFFFFF,
 };
 

@@ -58,22 +58,24 @@ public final class Main {
         String port = null;
         Path stateDir = Path.of("state");
         int window = 120;
+        int channelKhz = CHANNEL_KHZ;
         for (int i = 1; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--port" -> port = args[i + 1];
                 case "--state" -> stateDir = Path.of(args[i + 1]);
                 case "--window" -> window = Integer.parseInt(args[i + 1]);
+                case "--channel" -> channelKhz = Integer.parseInt(args[i + 1]);
                 default -> usage();
             }
         }
         if (port == null || (args[0].equals("join") && window <= 0)) {
             usage();
         }
-        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0));
+        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz));
     }
 
     /** With windowSeconds 0, serves without a pair window until stopped. */
-    private static int run(String port, Path stateDir, int windowSeconds) throws Exception {
+    private static int run(String port, Path stateDir, int windowSeconds, int channelKhz) throws Exception {
         Identity id = Identity.loadOrCreate(stateDir.resolve("coordinator.properties"),
                 windowSeconds == 0 ? SERVE_COUNTER_BLOCK : COUNTER_BLOCK);
         log("coordinator " + id.eui + ", counter floor " + id.counterFloor);
@@ -85,7 +87,7 @@ public final class Main {
                 HostLink link = new HostLink(new SerialTransport(port), events::add, tap)) {
             HostLink.Pong pong = link.ping();
             log("firmware v" + pong.firmwareVersion());
-            link.configure(id.eui, id.networkKey, id.counterFloor, CHANNEL_KHZ);
+            link.configure(id.eui, id.networkKey, id.counterFloor, channelKhz);
 
             if (windowSeconds == 0) {
                 JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
@@ -212,8 +214,8 @@ public final class Main {
     }
 
     private static void usage() {
-        System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>]");
-        System.err.println("       serve --port <serial device> [--state <dir>]");
+        System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>] [--channel <kHz>]");
+        System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>]");
         System.exit(2);
     }
 }

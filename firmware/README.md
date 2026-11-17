@@ -72,8 +72,17 @@ traffic, timed on this radio with a `make SNIFF=1` build:
 - Frequency: tuned in 5 kHz steps with the bridge on, this radio receives the
   plant cleanly from 868.290 to 868.385 MHz (868.285 and 868.390: almost
   nothing), so the plant sits at 868.335 MHz on our synthesizer, which the host
-  now sends in `CONFIG`. 868.300 was 10 kHz from the lower edge. The value
-  includes this board's crystal error: re-measure on another board.
+  now sends in `CONFIG`. 868.300 was 10 kHz from the lower edge.
+- Carrier tracking: an RF override (`0x000488E3`, rev E silicon) makes the RF
+  core append its estimate of each frame's carrier offset, a signed byte in
+  1/64 of the 25 kHz deviation, before the RSSI. It is steady (sd ~0.5 units
+  per sender) and agrees with the sweep; its scale reads about 8 % low. The
+  coordinator averages it per device over our own devices only, logs the
+  median every 16 readings (`carrier offset <Hz> over <n> devices`), and past
+  4 kHz retunes the radio (`retuned to <kHz> kHz (<k> from CONFIG)`), at most
+  every 2 minutes, at most 40 kHz from `CONFIG`, only while idle. Started at
+  868.300 MHz it reached 868.335 after 5 minutes and 868.340 after 15, from
+  the sensor alone.
 
 Still open: the RX bandwidth code `rxBw = 0x55` (~137 kHz intended) and
 `biasMode`.

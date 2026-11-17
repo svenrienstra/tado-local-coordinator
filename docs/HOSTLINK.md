@@ -92,7 +92,7 @@ knows, so firmware may append new ones):
 
 | Type | Name | Payload |
 |---|---|---|
-| `0xC0` | `LOG` | ASCII text: `boot fw=<n> reset=<reason>` once after reset, then one line per radio error, refused answer or failed job |
+| `0xC0` | `LOG` | ASCII text: `boot fw=<n> reset=<reason>` once after reset, then one line per radio error, refused answer, late ACK or failed job; `carrier offset <Hz> over <n> devices` per 16 carrier readings from our devices, and `retuned to <kHz> kHz (<k> from CONFIG)` when the radio follows them (the host keeps that frequency for the next `CONFIG`; the CC1312 stores nothing) |
 | `0xC1` | `RX` | `flags` (u8), `rssi` (i8), `mac_seq` (u8), `src_eui` [8], `counter` (u32), `rat` (u32), `packet` |
 | `0xC2` | `BEACON_ANSWERED` | `joiner_eui` [8], `request_counter` (u32), `rssi` (i8), `beacon_seq` (u8) |
 | `0xC3` | `RX_UNVERIFIED` | `rssi` (i8), `rat` (u32), `frame` (raw MAC frame, no PHY CRC) |

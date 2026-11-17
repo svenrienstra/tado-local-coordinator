@@ -27,8 +27,10 @@
 #define DATA_GAP_BROADCAST (520u * RAT_PER_US)
 #define DATA_GAP_UNICAST   (820u * RAT_PER_US)
 
-/* RF queue entries: length byte, frame, RSSI, 4-byte RAT timestamp. */
-#define ENTRY_DATA  (1 + MAC_MAX_FRAME + 1 + 4)
+/* RF queue entries: length byte, frame, frequency offset, RSSI, 4-byte RAT
+ * timestamp. */
+#define ENTRY_TRAILER (1 + 1 + 4)
+#define ENTRY_DATA  (1 + MAC_MAX_FRAME + ENTRY_TRAILER)
 #define ENTRY_SIZE  ((sizeof(rfc_dataEntryGeneral_t) - 1 + ENTRY_DATA + 3) & ~3u)
 #define RX_ENTRIES  4
 #define RX_SLOTS    8
@@ -55,6 +57,7 @@ struct rx_slot {
     uint8_t frame[MAC_MAX_FRAME];
     uint8_t len;
     int8_t rssi;
+    int8_t freq_offset;
     uint32_t rat_end;
 };
 static struct rx_slot slots[RX_SLOTS];
@@ -118,13 +121,15 @@ static void drain_queue(void)
         rfc_dataEntryGeneral_t *e = rx_read;
         uint8_t *d = &e->data;
         uint8_t stored = d[0];
-        if (stored >= 1 + 4 && stored - 5 <= MAC_MAX_FRAME && slot_head - slot_tail < RX_SLOTS) {
+        if (stored >= ENTRY_TRAILER && stored - ENTRY_TRAILER <= MAC_MAX_FRAME &&
+            slot_head - slot_tail < RX_SLOTS) {
             struct rx_slot *s = &slots[slot_head % RX_SLOTS];
-            s->len = (uint8_t)(stored - 5);
+            s->len = (uint8_t)(stored - ENTRY_TRAILER);
             memcpy(s->frame, &d[1], s->len);
-            s->rssi = (int8_t)d[1 + s->len];
+            s->freq_offset = (int8_t)d[1 + s->len];
+            s->rssi = (int8_t)d[2 + s->len];
             uint32_t ts;
-            memcpy(&ts, &d[2 + s->len], 4);
+            memcpy(&ts, &d[3 + s->len], 4);
             /* The RF core dates a packet at its first preamble bit, though it
              * detects the sync word (TI, "Time synchronization over the air").
              * The frame ends after preamble, sync word, length byte, frame and
@@ -319,6 +324,11 @@ unsigned radio_abort_job(void)
     return ran;
 }
 
+bool radio_busy(void)
+{
+    return job != JOB_NONE || tx_pending();
+}
+
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail)
 {
     account_rx();
@@ -340,7 +350,7 @@ void radio_poll(struct coordinator *c)
     }
     while (slot_tail != slot_head) {
         struct rx_slot *s = &slots[slot_tail % RX_SLOTS];
-        coord_on_rx(c, s->frame, s->len, s->rssi, s->rat_end);
+        coord_on_rx(c, s->frame, s->len, s->rssi, s->rat_end, s->freq_offset);
         slot_tail++;
     }
     if (rx_restart && job == JOB_NONE)

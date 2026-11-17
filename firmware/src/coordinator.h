@@ -46,6 +46,9 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frame
 /* Drops the running job, if any; no coord_on_job_sent() follows for it.
  * Returns how many of its TX commands (wake-up frames, then Data) had run. */
 unsigned radio_abort_job(void);
+/* Whether anything is on air or posted: a job, an ACK or a beacon answer.
+ * radio_set_channel would cut it off. */
+bool radio_busy(void);
 /* Frames the RF core received since boot with a good and with a bad CRC. */
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 
@@ -89,6 +92,22 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
  * answers every copy behind a train of its own. */
 #define DEDUP_SOURCES         16
 #define DEDUP_WINDOW_MS       30000u
+
+/* Carrier tracking. The RF core estimates each frame's carrier offset in 1/64
+ * of the 25 kHz deviation. Only our own devices count: decrypted frames and
+ * their ACKs to our jobs. After TUNE_WINDOW readings the median of the
+ * per-device means (devices with TUNE_MIN_PER_SOURCE readings) is logged; past
+ * the deadband the radio follows it, at most every TUNE_INTERVAL_MS, at most
+ * TUNE_MAX_HZ from the CONFIG frequency, and only while the radio is idle.
+ * Readings near the estimator's limit are dropped. */
+#define FREQ_OFFSET_UNIT_HZ_X64 25000 /* Hz per unit, times 64 */
+#define TUNE_SOURCES          8
+#define TUNE_WINDOW           16
+#define TUNE_MIN_PER_SOURCE   4
+#define TUNE_CLIP             120
+#define TUNE_DEADBAND_HZ      4000
+#define TUNE_MAX_HZ           40000
+#define TUNE_INTERVAL_MS      120000u
 #define TX_QUEUE_LEN          4
 #ifdef SNIFF
 #define UNVERIFIED_PER_SECOND 1000 /* every frame of a 254-frame train */
@@ -110,6 +129,13 @@ struct tx_job {
     uint64_t start;       /* RAT time of the first frame */
     uint8_t frame[MAC_MAX_FRAME];
     size_t len;
+};
+
+struct tune_source {
+    bool used;
+    uint8_t short_addr[2];
+    int32_t sum; /* readings, in units */
+    uint16_t n;
 };
 
 struct last_seq {
@@ -157,6 +183,15 @@ struct coordinator {
     struct anchor anchors[ANCHORS];
     struct last_seq last_seqs[DEDUP_SOURCES];
 
+    uint32_t channel_khz;  /* from CONFIG */
+    int32_t tune_khz;      /* our correction on top of it */
+    struct tune_source tune[TUNE_SOURCES];
+    uint16_t tune_readings;
+    bool tune_pending;
+    int32_t tune_step_khz;
+    bool tuned_once;
+    uint32_t tune_last_ms;
+
     struct tx_job queue[TX_QUEUE_LEN];
     size_t queue_len;
     bool job_on_air;      /* queue[0] handed to the radio */
@@ -179,9 +214,11 @@ void coord_init(struct coordinator *c);
 void coord_boot(struct coordinator *c, const char *reset_reason);
 /* Bytes from the host UART. */
 void coord_on_host_bytes(struct coordinator *c, const uint8_t *data, size_t len);
-/* A CRC-valid frame (without PHY CRC) that ended at rat_end. */
+/* A CRC-valid frame (without PHY CRC) that ended at rat_end. freq_offset is the
+ * RF core's estimate of how far its carrier sits from ours, in 1/64 of the
+ * deviation (390.625 Hz at 25 kHz). */
 void coord_on_rx(struct coordinator *c, const uint8_t *frame, size_t len, int8_t rssi,
-                 uint32_t rat_end);
+                 uint32_t rat_end, int8_t freq_offset);
 /* The radio finished the Data frame of the job started with token. */
 void coord_on_job_sent(struct coordinator *c, uint8_t token, bool ok);
 /* The radio saw a command end with an error status. */
