@@ -64,6 +64,7 @@ tadocoord.bench.<Tool> ...` from `host/` (they use `state/`):
 | `SniffBench <port> <file> <s>` | logs every frame with its RAT time, for `../tools/sniff/` (needs a `SNIFF=1` build) |
 | `RxSweep <port> <s> <rounds> <kHz>...` | counts good and bad frames per receive frequency, to find the plant's carrier (`../firmware/README.md`) |
 | `ProbeBench <port> <EUI> <n>` | sends `n` requests to a joined device, full train then anchored, and prints each MAC outcome |
+| `DeviceRequest <port> <EUI> <GET\|PUT\|POST> <path[?query]> [hex]` | one CoAP request to a joined device, as the bridge sends commands, and its decoded answer (`../docs/SENSOR.md`) |
 
 ## Layout
 
