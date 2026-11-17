@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -20,6 +21,7 @@ import tadocoord.link.Radio;
 import tadocoord.link.Radio.TxRequest;
 import tadocoord.lowpan.Datagram;
 import tadocoord.lowpan.Ipv6;
+import tadocoord.lowpan.Reassembler;
 import tadocoord.tado.TadoResources;
 
 /**
@@ -41,6 +43,8 @@ public final class JoinSession {
     static final Duration TX_DONE_TIMEOUT = Duration.ofSeconds(5);
 
     private static final int ICMP_ROUTER_SOLICITATION = 133;
+    private static final int PUT = CoapMessage.code(0, 3);
+    private static final int POST = CoapMessage.code(0, 2);
     private static final byte[] NO_IPV4 = new byte[4];
 
     public enum State { WAITING_FOR_JOINER, PAIRING, JOINED, FAILED }
@@ -51,6 +55,7 @@ public final class JoinSession {
     private final InstantSource clock;
     private final RandomGenerator rng;
     private final Consumer<String> progress;
+    private final Reassembler reassembler = new Reassembler();
 
     private State state = State.WAITING_FOR_JOINER;
     private Optional<Eui> joiner = Optional.empty();
@@ -125,7 +130,11 @@ public final class JoinSession {
     private void onRx(Event.Rx rx) throws IOException {
         Datagram d;
         try {
-            d = Datagram.parse(rx.packet(), rx.src(), rx.broadcast() ? Optional.empty() : Optional.of(coordinator));
+            Optional<byte[]> whole = reassembler.add(rx.src(), rx.packet(), clock.instant());
+            if (whole.isEmpty()) {
+                return; // a fragment of a datagram still incomplete
+            }
+            d = Datagram.parse(whole.get(), rx.src(), rx.broadcast() ? Optional.empty() : Optional.of(coordinator));
         } catch (IllegalArgumentException e) {
             progress.accept("unparsed datagram from " + rx.src() + ": " + e.getMessage());
             return;
@@ -187,6 +196,12 @@ public final class JoinSession {
             progress.accept("time from " + rx.src());
             send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_FULL,
                     TadoResources.timeAnswer(m, clock.instant().getEpochSecond(), d, coordinator, rx.src())));
+        } else if (m.type() == CoapMessage.Type.CON && (m.code() == PUT || m.code() == POST)) {
+            // Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries.
+            progress.accept("%s %s from %s, answering 2.04: %s".formatted(CoapMessage.codeString(m.code()), path,
+                    rx.src(), HexFormat.of().formatHex(m.payload())));
+            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_FULL,
+                    TadoResources.changedAnswer(m, d, coordinator, rx.src())));
         } else {
             progress.accept("CoAP %s %s %s from %s (not handled yet)".formatted(
                     m.type(), CoapMessage.codeString(m.code()), path, rx.src()));

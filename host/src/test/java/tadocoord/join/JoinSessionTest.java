@@ -203,6 +203,31 @@ class JoinSessionTest {
     }
 
     @Test
+    void answersAFragmentedReportWith204() throws Exception {
+        CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa302, new byte[] {7},
+                List.of(CoapMessage.path("d"), CoapMessage.path("SU0000000001"), CoapMessage.path("fw"),
+                        CoapMessage.path("state")), new byte[40]);
+        byte[] packet = Datagram.udp(joiner, coordinator, 5683, 5683, put.encode());
+        // RFC 4944: FRAG1 holds the 9 compressed header bytes (48 uncompressed) and 16 CoAP bytes,
+        // so the FRAGN starts at offset 64 (8 x 8).
+        int size = 48 + packet.length - 9;
+        byte[] frag1 = concat(new byte[] {(byte) (0xc0 | size >>> 8), (byte) size, 0, 5},
+                Arrays.copyOfRange(packet, 0, 9 + 16));
+        byte[] fragN = concat(new byte[] {(byte) (0xe0 | size >>> 8), (byte) size, 0, 5, 8},
+                Arrays.copyOfRange(packet, 9 + 16, packet.length));
+
+        session.onEvent(new Event.Rx(false, false, true, -50, 2, joiner, 2, 0, frag1));
+        assertTrue(sent.isEmpty());
+        session.onEvent(new Event.Rx(false, false, true, -50, 3, joiner, 3, 0, fragN));
+
+        CoapMessage answer = coap(sent.get(0));
+        assertEquals(CoapMessage.Type.ACK, answer.type());
+        assertEquals(CoapMessage.code(2, 4), answer.code());
+        assertEquals(0xa302, answer.mid());
+        assertArrayEquals(new byte[] {7}, answer.token());
+    }
+
+    @Test
     void ignoresRequestsUnderThePairingKey() throws Exception {
         CoapMessage time = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 1), 0x0102,
                 new byte[0], List.of(CoapMessage.path("time")), new byte[0]);
@@ -220,6 +245,12 @@ class JoinSessionTest {
     private Event.Rx fromJoiner(boolean pairingKey, CoapMessage m) {
         byte[] packet = Datagram.udp(joiner, coordinator, 5683, 5683, m.encode());
         return new Event.Rx(pairingKey, false, true, -50, 2, joiner, 2, 0, packet);
+    }
+
+    private static byte[] concat(byte[] a, byte[] b) {
+        byte[] out = Arrays.copyOf(a, a.length + b.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
     }
 
     private static CoapMessage ack(int mid, int code) {

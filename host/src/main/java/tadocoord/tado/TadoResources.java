@@ -93,6 +93,11 @@ public final class TadoResources {
         return Datagram.udp(coordinator, device, from.dstPort(), from.srcPort(), m.encode());
     }
 
+    /** The bridge's default answer to a PUT or POST: a piggybacked 2.04 with no body. */
+    public static byte[] changedAnswer(CoapMessage request, Datagram from, Eui coordinator, Eui device) {
+        return answer(request, CoapMessage.code(2, 4), new byte[0], from, coordinator, device);
+    }
+
     /** A piggybacked ACK echoing MID and token, ports swapped, with no options. */
     private static byte[] answer(CoapMessage request, int code, byte[] body, Datagram from,
             Eui coordinator, Eui device) {
