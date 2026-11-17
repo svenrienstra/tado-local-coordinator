@@ -398,6 +398,10 @@ static void receive_ack(struct coordinator *c, const uint8_t *frame, size_t len,
     if (c->job_on_air && c->queue[0].unicast && seq == c->queue[0].seq &&
         memcmp(dst, c->eui, 8) == 0)
         tx_done(c, TX_ACKED);
+#ifdef SNIFF
+    if (memcmp(dst, c->eui, 8) != 0)
+        report_unverified(c, frame, len, rssi, rat_end); /* another coordinator's ACK */
+#endif
 }
 
 void coord_on_rx(struct coordinator *c, const uint8_t *frame, size_t len, int8_t rssi,

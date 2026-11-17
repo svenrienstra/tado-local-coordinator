@@ -17,8 +17,13 @@
 
 #define RAT_PER_US         4u
 #define RAT_PER_BYTE       (8u * 20u * RAT_PER_US) /* 50 kbps */
-#define WAKE_STEP_RAT      (WAKE_STEP_MS * RAT_PER_MS)
-#define DATA_AFTER_WAKE    (12u * RAT_PER_MS)      /* commercial median */
+#define WAKE_STEP_RAT      (WAKE_STEP_US * RAT_PER_US)
+/* The Data frame starts 0.52 ms after the last wake-up frame ends, as the
+ * commercial bridge's after a full train: a device wakes on the rendezvous the
+ * train announced and listens only briefly. A wake-up frame is preamble 4 +
+ * sync 4 + length 1 + 12 + CRC 2 bytes on air. */
+#define WAKE_AIR_RAT       ((4u + 4u + 1u + MAC_WAKEUP_LEN + 2u) * RAT_PER_BYTE)
+#define DATA_AFTER_WAKE    (WAKE_AIR_RAT + 520u * RAT_PER_US)
 #define CHAIN_LEAD_RAT     (2u * RAT_PER_MS)       /* time to set up a chain */
 
 /* RF queue entries: length byte, frame, RSSI, 4-byte RAT timestamp. */

@@ -53,6 +53,13 @@ ifneq ($(BL_PIN),)
 DEFINES += -DBL_BACKDOOR_PIN=$(BL_PIN)
 endif
 
+# SNIFF=1: report every frame the coordinator cannot open, overheard Enhanced
+# ACKs included, with no rate limit; for timing captures on the bench.
+# `make clean` after changing it.
+ifneq ($(SNIFF),)
+DEFINES += -DSNIFF
+endif
+
 CFLAGS := -std=c11 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
   -Os -g -ffunction-sections -fdata-sections \
   $(DEFINES) -Isrc -Itarget -I$(SDK)/source -I$(SDK)/kernel/nortos -I$(SDK)/kernel/nortos/posix

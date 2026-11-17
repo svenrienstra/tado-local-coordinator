@@ -55,14 +55,23 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 #define RAT_PER_MS            4000u
 #define BEACON_DELAY_RAT      (3u * RAT_PER_MS)
 /* Enhanced ACK start after the frame ends: the commercial bridge's is 0-1 ms.
- * A frame reaches the main loop about 0.5 ms after its end and the ACK is
- * posted from its clear header right away, so 0.6 ms is met every time. */
-#define ACK_DELAY_RAT         (RAT_PER_MS * 3u / 5u)
+ * The commercial bridge starts its ACK 0.35-0.45 ms after the frame (measured
+ * on our radio). Ours cannot be that early: a frame reaches the main loop about
+ * 0.49 ms after its end, and the ACK is posted from its clear header right
+ * after, so 0.55 ms is the earliest start met every time. */
+#define ACK_DELAY_RAT         (RAT_PER_MS * 11u / 20u)
 #define ACK_WAIT_MS           30u
-#define WAKE_STEP_MS          4u  /* wake-up frame spacing */
+/* Wake-up frame spacing, 12.4 rendezvous units: the commercial bridge's,
+ * measured on our radio (2026-11-17). Rounded up to whole ms for budgets. */
+#define WAKE_STEP_US          3968u
+#define WAKE_STEP_MS          4u
 #define JOB_MARGIN_MS         50u /* chain setup, gap before Data, PHY overhead */
 #define TX_QUEUE_LEN          4
+#ifdef SNIFF
+#define UNVERIFIED_PER_SECOND 1000 /* every frame of a 254-frame train */
+#else
 #define UNVERIFIED_PER_SECOND 10
+#endif
 #define LOG_PER_SECOND        10
 #define LOG_MAX               64
 
