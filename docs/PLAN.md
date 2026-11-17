@@ -59,16 +59,22 @@ The CC1312 and the ESP32 sit next to each other, wired by UART and powered
 together. The only network hop is MQTT.
 
 ### 3.1 All real-time work lives on the CC1312
-CSL timing cannot survive a UART round-trip through the ESP. Reference timings
-(freedo's on-air measurements; re-measure ourselves in M0):
+CSL timing cannot survive a UART round-trip through the ESP. Reference timings,
+measured on our CC1312 against the commercial bridge (2026-11-17, 154 trains
+and 286 ACKs; `firmware/README.md` "On air"):
 
-- Enhanced-ACK starts **0-1 ms after the Data frame ends** (the 29-byte ACK
-  itself ends 6-7 ms after the Data frame; freedo's "5.0-8.0 ms after it" is
-  measured end to end and includes the ACK's own airtime).
-- Data frame 9-24 ms after the last wake-up frame (median 12 ms).
-- Wake-up trains, 4.0 ms frame step: rendezvous 248->0 in 21 frames / 79 ms,
-  or 3125->0 in 254 frames / 1.003 s. Only the coordinator sends trains; a
-  broadcast goes behind the full 1.003 s train.
+- Enhanced-ACK starts **0.35-0.45 ms after the Data frame ends** (ours: 0.55 ms,
+  the earliest our 0.49 ms receive latency allows).
+- Data frame **0.52 ms (broadcast) or a median 0.82 ms (unicast) after the last
+  wake-up frame ends**. freedo's "9 to 24 ms after the last wake-up frame
+  (median 12 ms)" is wrong; a train built on it wakes a device 16-24 ms early
+  and the Data frame misses it.
+- Wake-up trains, **3968 us frame step** (12.4 rendezvous units): rendezvous
+  248->0 in 21 frames centred on the device's sample, or 3125->0 in 254 frames
+  / 1.05 s. Only the coordinator sends trains; a broadcast goes behind the full
+  train.
+- A device's sample: Enhanced-ACK end minus its CSL phase x 320 us, then every
+  1 s; stable within 0.3 ms over minutes.
 - Pairing beacon answer: no wake-up train, 2.4-7.4 ms after the request.
 - Retransmits: devices after 1.5-3.6 s, the coordinator after 2-6 s.
 
@@ -330,6 +336,12 @@ M-1 for a wall thermostat before M4 depends on it.
 stop and reassess.
 
 ### M0 — Tight CSL timing  *(firmware-only)*
+**Works on air (2026-11-17)** with the wireless temperature sensor: Enhanced ACKs
+taken (no MAC retries), anchored short trains 9/9. Not measured: the ACK's
+on-air start (we know when it is posted, not when the RF core starts it), the
+correctness of our CSL phase (a free-running counter, like the bridge's), and
+the train jitter (delivery inside a +/-40 ms guard proves no +/-100 us figure).
+
 The timing M-1 could skip:
 1. Generate a valid (unsecured) Enhanced-ACK starting 0-1 ms after an RX ends,
    with a correct CSL IE; measure the real gap on our own captures.

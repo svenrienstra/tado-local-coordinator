@@ -21,7 +21,7 @@ File references below are relative to `reference/freedo/`.
 | Data header (unicast) | FCF(2) seq(1) dstEUI(8) srcEUI prefix(5) | `tado/frame.go` |
 | Frame counter | application field inside the plaintext, not in the nonce; devices accept lower values | `PROTOCOL.md` "Frame counter" |
 | Wake-up frame | 12 bytes: `25` seq PAN(2 LE) dstShort(2) `820e` rendezvous(2 LE) `803f` | `tado/build_mac.go` `BuildWakeUp` |
-| Full train | 254 frames, rendezvous 3125 -> 0, 4.0 ms step, 1.003 s | `BuildRouterAdvertWakeUpBurst` |
+| Full train | 254 frames, rendezvous 3125 -> 0, 3968 us step, 1.05 s; Data 0.52-0.82 ms after the last ends | `BuildRouterAdvertWakeUpBurst`; step and gap measured on the bridge (`../firmware/README.md`) |
 | Short train | 21 frames, rendezvous 248 -> 0, 79 ms (needs a CSL anchor) | `PROTOCOL.md` "Link layer" |
 | Enhanced ACK | 29 bytes, unsecured: FCF `42ee` seq dst(8) src(8) `040d` phase(2 LE) period(2 LE) `803f` FCS(2); FCS = CRC-16/CCITT reflected, poly `0x8408`, init 0, LE | `BuildEnhAck` |
 | Our identity | coordinator EUI-64 and network key: ours to choose (key: 16 random bytes from a CSPRNG) | - |

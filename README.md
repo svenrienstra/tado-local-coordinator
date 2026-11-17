@@ -5,9 +5,10 @@ valves, wall thermostats), built from scratch around a **TI CC1312R1** radio and
 an **ESP32** gateway that speaks MQTT to Home Assistant. No tado cloud, no
 HomeKit, no key extraction.
 
-> Status: **M-1 built, not yet run on hardware**: the CC1312 firmware and the
-> Java bench tool that tests whether a valve joins with our key. See
-> [`docs/PLAN.md`](docs/PLAN.md).
+> Status: **M-1 and M0 pass on air** (2026-11-17). A tado wireless temperature
+> sensor joined our network with our key, and the CC1312 firmware plus the Java
+> bench tool keep it served: Enhanced ACKs, reports, `time`, and replies behind
+> short trains on its channel sample. See [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Why this can work without recovering any key
 
