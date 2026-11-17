@@ -303,8 +303,9 @@ public final class JoinSession {
     }
 
     /**
-     * The configuration ({@code d/<serial>/config}) or zone document ({@code
-     * h/<home>/z/<n>/config}) for a device of the installation; empty for anything else.
+     * The configuration ({@code d/<serial>/config}), zone document ({@code h/<home>/z/<n>/config})
+     * or zone state ({@code h/<home>/z/<n>/s}) for a device of the installation; empty for
+     * anything else.
      */
     private Optional<byte[]> documentFor(Eui device, String path) {
         String[] s = path.split("/");
@@ -319,9 +320,17 @@ public final class JoinSession {
                     : Optional.of(ConfigDocuments.deviceConfig(installation.homeId(), roles));
         }
         if (s.length == 5 && s[0].equals("h") && s[1].equals(Long.toString(installation.homeId()))
-                && s[2].equals("z") && s[4].equals("config")) {
-            Eui owner = installation.zoneOwners().get(Integer.parseInt(s[3]));
-            return owner == null ? Optional.empty() : Optional.of(ConfigDocuments.zoneWithOwner(owner));
+                && s[2].equals("z") && s[3].matches("\\d+")) {
+            int zone = Integer.parseInt(s[3]);
+            Eui owner = installation.zoneOwners().get(zone);
+            if (owner == null) {
+                return Optional.empty();
+            }
+            return switch (s[4]) {
+                case "config" -> Optional.of(ConfigDocuments.zoneWithOwner(owner));
+                case "s" -> Optional.of(ConfigDocuments.zoneState(installation.setpoint(zone)));
+                default -> Optional.empty();
+            };
         }
         return Optional.empty();
     }

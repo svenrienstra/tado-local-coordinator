@@ -82,6 +82,23 @@ public final class ConfigDocuments {
     }
 
     /**
+     * A zone's state as a device reads it ({@code GET h/<home>/z/<n>/s}): at home, a heating
+     * zone, on, following {@code setpoint} (centi-degrees C), no overlay, no open window. The
+     * device keeps any tag a body leaves out.
+     */
+    public static byte[] zoneState(int setpoint) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        tlv(out, 0x6160, new byte[] {1}); // home
+        tlv(out, 0x6180, new byte[] {0});
+        tlv(out, 0x6020, new byte[] {1}); // heating
+        tlv(out, 0x61e0, new byte[] {1}); // on
+        tlv(out, 0x6200, u16(setpoint));
+        tlv(out, 0x6240, new byte[] {0}); // no overlay
+        tlv(out, 0x62e0, new byte[] {0}); // window closed
+        return out.toByteArray();
+    }
+
+    /**
      * {@code coap://[fe80:0:0:0:..]/z/}: the device's link-local address, its EUI-64 with the
      * U/L bit flipped, in lowercase hex groups without leading zeros.
      */

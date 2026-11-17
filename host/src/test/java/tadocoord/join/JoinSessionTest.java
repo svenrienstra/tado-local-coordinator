@@ -263,7 +263,7 @@ class JoinSessionTest {
     @Test
     void servesTheInstallationsDevicesTheirConfigAndZoneDocument() throws Exception {
         JoinSession serving = JoinSession.serving(coordinator, networkKey, radio, clock, new SplittableRandom(1),
-                msg -> { }).installation(new Installation(4242, java.util.Map.of(11, joiner)));
+                msg -> { }).installation(new Installation(4242, java.util.Map.of(11, joiner), java.util.Map.of()));
         serving.onEvent(fromJoiner(false, get(0x0201, "d", "VA0000000001", "config")));
         CoapMessage config = coap(sent.get(0));
         assertEquals(CoapMessage.code(2, 5), config.code());
@@ -275,9 +275,13 @@ class JoinSessionTest {
         assertEquals(CoapMessage.code(2, 5), zone.code());
         assertEquals(64, zone.payload().length); // block 0 of a longer document
 
+        serving.onEvent(fromJoiner(false, get(0x0205, "h", "4242", "z", "11", "s")));
+        CoapMessage state = coap(sent.get(2));
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(Installation.DEFAULT_SETPOINT), state.payload());
+
         serving.onEvent(fromJoiner(false, get(0x0203, "h", "4242", "z", "12", "config")));
         serving.onEvent(fromJoiner(false, get(0x0204, "h", "1", "z", "11", "config")));
-        assertEquals(2, sent.size()); // no zone 12, no home 1: not ours to answer
+        assertEquals(3, sent.size()); // no zone 12, no home 1: not ours to answer
     }
 
     private static CoapMessage get(int mid, String... path) {

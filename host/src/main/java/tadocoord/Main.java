@@ -65,6 +65,7 @@ public final class Main {
         int window = 120;
         Integer channelKhz = null; // the tuned one from state/, else CHANNEL_KHZ
         Map<Integer, Eui> zones = new TreeMap<>();
+        Map<Integer, Integer> setpoints = new TreeMap<>();
         for (int i = 1; i + 1 < args.length; i += 2) {
             switch (args[i]) {
                 case "--port" -> port = args[i + 1];
@@ -75,18 +76,22 @@ public final class Main {
                     String[] z = args[i + 1].split("=");
                     zones.put(Integer.parseInt(z[0]), Eui.ofHex(z[1]));
                 }
+                case "--setpoint" -> {
+                    String[] z = args[i + 1].split("=");
+                    setpoints.put(Integer.parseInt(z[0]), (int) Math.round(Double.parseDouble(z[1]) * 100));
+                }
                 default -> usage();
             }
         }
         if (port == null || (args[0].equals("join") && window <= 0)) {
             usage();
         }
-        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz, zones));
+        System.exit(run(port, stateDir, args[0].equals("join") ? window : 0, channelKhz, new Installation(0, zones, setpoints)));
     }
 
     /** With windowSeconds 0, serves without a pair window until stopped. */
     private static int run(String port, Path stateDir, int windowSeconds, Integer channelOverride,
-            Map<Integer, Eui> zones) throws Exception {
+            Installation zones) throws Exception {
         Path identityFile = stateDir.resolve("coordinator.properties");
         Identity id = Identity.loadOrCreate(identityFile,
                 windowSeconds == 0 ? SERVE_COUNTER_BLOCK : COUNTER_BLOCK);
@@ -105,8 +110,10 @@ public final class Main {
 
             if (windowSeconds == 0) {
                 JoinSession session = JoinSession.serving(id.eui, id.networkKey, link, Clock.systemUTC(),
-                        new SecureRandom(), Main::log).installation(new Installation(id.homeId, zones));
-                log("serving the joined devices (home " + id.homeId + ", zones " + zones + "); stop with Ctrl-C");
+                        new SecureRandom(), Main::log)
+                        .installation(new Installation(id.homeId, zones.zoneOwners(), zones.setpoints()));
+                log("serving the joined devices (home " + id.homeId + ", zones " + zones.zoneOwners()
+                        + ", setpoints " + zones.setpoints() + "); stop with Ctrl-C");
                 runWindow(link, session, events, Instant.MAX, identityFile);
                 return 0;
             }
@@ -266,7 +273,7 @@ public final class Main {
 
     private static void usage() {
         System.err.println("usage: join --port <serial device> [--state <dir>] [--window <seconds>] [--channel <kHz>]");
-        System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>] [--zone <n>=<owner EUI>]...");
+        System.err.println("       serve --port <serial device> [--state <dir>] [--channel <kHz>] [--zone <n>=<owner EUI>]... [--setpoint <n>=<C>]...");
         System.exit(2);
     }
 }
