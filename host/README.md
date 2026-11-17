@@ -54,6 +54,17 @@ the frame-counter floor (a block of 4096 is reserved per `join` run, 2^20 per
 `serve` run). It is created on
 first run with mode 600; keep it — a device joined with that key needs it.
 
+## Bench tools
+
+In `tadocoord.bench`, run with `java -cp target/tado-coordinator-host.jar
+tadocoord.bench.<Tool> ...` from `host/` (they use `state/`):
+
+| Tool | What it does |
+|---|---|
+| `SniffBench <port> <file> <s>` | logs every frame with its RAT time, for `../tools/sniff/` (needs a `SNIFF=1` build) |
+| `RxSweep <port> <s> <rounds> <kHz>...` | counts good and bad frames per receive frequency, to find the plant's carrier (`../firmware/README.md`) |
+| `ProbeBench <port> <EUI> <n>` | sends `n` requests to a joined device, full train then anchored, and prints each MAC outcome |
+
 ## Layout
 
 | Package | Contents |
@@ -63,3 +74,4 @@ first run with mode 600; keep it — a device joined with that key needs it.
 | `tadocoord.coap` | CoAP message codec |
 | `tadocoord.tado` | join resources: `d/pair`, `auth/token`, `time`, Router Advertisement |
 | `tadocoord.join` | `JoinSession`: the join state machine, and the serving mode behind `serve` |
+| `tadocoord.bench` | bench tools (above) |
