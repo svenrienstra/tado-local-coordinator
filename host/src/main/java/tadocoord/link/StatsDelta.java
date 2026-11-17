@@ -8,7 +8,7 @@ public final class StatsDelta {
     /** docs/HOSTLINK.md STATS order; counters a newer firmware appends show by index. */
     static final List<String> NAMES = List.of("rx_ok", "rx_crc_fail", "rx_unverified", "beacons_answered",
             "acks_sent", "answers_refused", "jobs_ok", "jobs_failed", "jobs_timed_out", "radio_errors",
-            "link_crc_errors", "link_resyncs", "acks_late");
+            "link_crc_errors", "link_resyncs", "acks_late", "jobs_anchored");
 
     private long[] last = new long[0];
 

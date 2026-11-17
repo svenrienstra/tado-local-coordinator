@@ -187,6 +187,8 @@ class JoinSessionTest {
         session.onEvent(fromJoiner(false, auth));
 
         CoapMessage authAnswer = coap(sent.get(0));
+        // Replies go on the device's next channel sample, not behind a 1 s train.
+        assertEquals(TxRequest.TRAIN_ANCHORED, sent.get(0).flags());
         assertEquals(CoapMessage.Type.ACK, authAnswer.type());
         assertEquals(0x0101, authAnswer.mid());
         assertEquals(0x025e, ((authAnswer.payload()[0] & 0xff) << 8) | (authAnswer.payload()[1] & 0xff));

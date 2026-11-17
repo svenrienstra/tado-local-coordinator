@@ -38,11 +38,11 @@ void radio_set_channel(uint32_t khz);
 /* Sends a frame starting at the given RAT time (no wake-up train). False when
  * the radio is busy with a job or another frame; nothing is sent then. */
 bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start);
-/* Starts a job: wake_frames wake-up frames to dst_short carrying seq, then
- * the Data frame. Finishes with coord_on_job_sent() carrying token. False
- * when busy. */
+/* Starts a job: wake_frames wake-up frames to dst_short carrying seq, the
+ * first at RAT time rat_start, then the Data frame. Finishes with
+ * coord_on_job_sent() carrying token. False when busy. */
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frames,
-                    const uint8_t *frame, size_t len, uint8_t token);
+                    uint32_t rat_start, const uint8_t *frame, size_t len, uint8_t token);
 /* Drops the running job, if any; no coord_on_job_sent() follows for it.
  * Returns how many of its TX commands (wake-up frames, then Data) had run. */
 unsigned radio_abort_job(void);
@@ -66,6 +66,24 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 #define WAKE_STEP_US          3968u
 #define WAKE_STEP_MS          4u
 #define JOB_MARGIN_MS         50u /* chain setup, gap before Data, PHY overhead */
+/* A job reaches the radio this long before its first frame: posting it aborts
+ * the receiver, so a job waiting for a device's sample stays queued until then. */
+#define JOB_LEAD_RAT          (5u * RAT_PER_MS)
+#define CHAIN_LEAD_RAT        (2u * RAT_PER_MS) /* the radio's time to set up a chain */
+
+/* CSL anchors, as freedo's firmware keeps them. A device samples the channel
+ * every period; the phase in its Enhanced ACK says how long before the ACK's
+ * end it last did. A short train centred on its next sample, 2 x the guard
+ * long, reaches it: 40 ms each side gives the bridge's 21 frames. The guard
+ * grows with the anchor's age for clock drift. After a miss the next job goes
+ * behind a full train; ANCHOR_MISS_LIMIT misses drop the anchor. */
+#define CSL_PERIOD_RAT        (1000u * RAT_PER_MS)
+#define CSL_UNIT_RAT          1280u /* 320 us: phase and rendezvous unit */
+#define ANCHOR_GUARD_RAT      (40u * RAT_PER_MS)
+#define ANCHOR_GUARD_PPM      30u
+#define ANCHOR_GUARD_MAX_RAT  (CSL_PERIOD_RAT / 2u)
+#define ANCHOR_MISS_LIMIT     4
+#define ANCHORS               16
 #define TX_QUEUE_LEN          4
 #ifdef SNIFF
 #define UNVERIFIED_PER_SECOND 1000 /* every frame of a 254-frame train */
@@ -80,9 +98,21 @@ struct tx_job {
     bool unicast;
     uint8_t seq;
     uint8_t dst_short[2];
+    uint8_t train;        /* TRAIN_NONE, _FULL or _ANCHORED, as the host asked */
+    bool scheduled;       /* wake_frames, start and anchored are set */
+    bool anchored;        /* goes behind a short train on the device's sample */
     uint16_t wake_frames;
+    uint64_t start;       /* RAT time of the first frame */
     uint8_t frame[MAC_MAX_FRAME];
     size_t len;
+};
+
+struct anchor {
+    bool valid;
+    uint8_t short_addr[2];
+    uint64_t sample;  /* RAT time of one sample of the device */
+    uint64_t refresh; /* when it was learnt */
+    uint8_t misses;
 };
 
 /* STATS counters kept by the core, since boot (docs/HOSTLINK.md). */
@@ -91,6 +121,7 @@ struct coord_stats {
     uint32_t beacons_answered;
     uint32_t acks_sent;
     uint32_t acks_late; /* posted after their start time; the radio sent them late */
+    uint32_t jobs_anchored; /* jobs sent behind a short train on the device's sample */
     uint32_t answers_refused;
     uint32_t jobs_ok;
     uint32_t jobs_failed;
@@ -107,6 +138,10 @@ struct coordinator {
     uint32_t counter;
     uint32_t pair_until_ms; /* window open while now < this */
     bool pair_open;
+
+    uint64_t rat_high; /* RAT wraps every 1074 s: its upper 32 bits */
+    uint32_t rat_last;
+    struct anchor anchors[ANCHORS];
 
     struct tx_job queue[TX_QUEUE_LEN];
     size_t queue_len;

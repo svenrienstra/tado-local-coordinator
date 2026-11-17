@@ -211,17 +211,17 @@ public final class JoinSession {
         String path = m.path();
         if (m.type() == CoapMessage.Type.CON && (path.equals("auth/token") || path.equals("auth/key"))) {
             progress.accept(path + " from " + rx.src() + ", answering with a session");
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_FULL,
+            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
                     TadoResources.authTokenAnswer(m, sessionId(rx.src()), d, coordinator, rx.src())));
         } else if (m.type() == CoapMessage.Type.CON && path.equals("time")) {
             progress.accept("time from " + rx.src());
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_FULL,
+            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
                     TadoResources.timeAnswer(m, clock.instant().getEpochSecond(), d, coordinator, rx.src())));
         } else if (m.type() == CoapMessage.Type.CON && (m.code() == PUT || m.code() == POST)) {
             // Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries.
             progress.accept("%s %s from %s, answering 2.04: %s".formatted(CoapMessage.codeString(m.code()), path,
                     rx.src(), HexFormat.of().formatHex(m.payload())));
-            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_FULL,
+            send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED,
                     TadoResources.changedAnswer(m, d, coordinator, rx.src())));
         } else {
             progress.accept("CoAP %s %s %s from %s (not handled yet)".formatted(

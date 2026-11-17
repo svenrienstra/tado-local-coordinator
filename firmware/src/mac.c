@@ -90,13 +90,19 @@ void mac_build_wakeup(uint8_t out[MAC_WAKEUP_LEN], uint8_t seq, const uint8_t ds
     memcpy(&out[10], ie_term, 2);
 }
 
-uint16_t mac_train_rendezvous(int i)
+uint16_t mac_train_rendezvous(int i, int n)
 {
-    /* 253 frames spread 3125..1 evenly, then a last frame at 0. */
-    if (i >= MAC_TRAIN_FULL - 1)
+    if (i >= n - 1)
         return 0;
-    return (uint16_t)(1 + (uint32_t)(MAC_CSL_PERIOD - 1) * (uint32_t)(MAC_TRAIN_FULL - 2 - i) /
-                              (MAC_TRAIN_FULL - 2));
+    if (n == MAC_TRAIN_FULL) /* 253 frames spread 3125..1 evenly, then 0 */
+        return (uint16_t)(1 + (uint32_t)(MAC_CSL_PERIOD - 1) * (uint32_t)(MAC_TRAIN_FULL - 2 - i) /
+                                  (MAC_TRAIN_FULL - 2));
+    return (uint16_t)((uint32_t)(n - 1 - i) * 62u / 5u);
+}
+
+uint16_t mac_enh_ack_phase(const uint8_t ack[MAC_ENH_ACK_LEN])
+{
+    return get16(&ack[21]);
 }
 
 void mac_build_enh_ack(uint8_t out[MAC_ENH_ACK_LEN], uint8_t seq, const uint8_t dst[8],

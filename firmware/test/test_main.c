@@ -101,10 +101,12 @@ bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start)
     return true;
 }
 
+static uint32_t job_start; /* RAT time of the last job's first frame */
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frames,
-                    const uint8_t *frame, size_t len, uint8_t token)
+                    uint32_t rat_start, const uint8_t *frame, size_t len, uint8_t token)
 {
     (void)seq;
+    job_start = rat_start;
     job_token = token;
     memcpy(job_short, dst_short, 2);
     job_wake_frames = wake_frames;
@@ -212,10 +214,19 @@ static void test_wakeup_and_ack(void)
     CHECK_VEC(w, sizeof w, "wakeup.unicast_248");
 
     CHECK(V("wakeup.ra_burst_count")->data[0] == MAC_TRAIN_FULL);
-    mac_build_wakeup(w, 0x12, bcast, mac_train_rendezvous(0));
+    mac_build_wakeup(w, 0x12, bcast, mac_train_rendezvous(0, MAC_TRAIN_FULL));
     CHECK_BYTES(w, sizeof w, V("wakeup.ra_burst_first")->data, MAC_WAKEUP_LEN);
-    mac_build_wakeup(w, 0x12, bcast, mac_train_rendezvous(MAC_TRAIN_FULL - 1));
+    mac_build_wakeup(w, 0x12, bcast, mac_train_rendezvous(MAC_TRAIN_FULL - 1, MAC_TRAIN_FULL));
     CHECK_BYTES(w, sizeof w, V("wakeup.ra_burst_last")->data, MAC_WAKEUP_LEN);
+
+    /* A short train as the commercial bridge sent one to a valve (our capture of
+     * 2026-11-17). */
+    static const uint16_t bridge_21[21] = {248, 235, 223, 210, 198, 186, 173, 161, 148, 136, 124,
+                                           111, 99,  86,  74,  62,  49,  37,  24,  12,  0};
+    bool same = true;
+    for (int i = 0; i < 21; i++)
+        same = same && mac_train_rendezvous(i, 21) == bridge_21[i];
+    CHECK(same);
 
     uint8_t ack[MAC_ENH_ACK_LEN], seq, dst[8];
     mac_build_enh_ack(ack, 0x22, V("in.joiner_eui")->data, V("in.coord_eui")->data, 0x0123);
@@ -535,6 +546,96 @@ static void test_coordinator_tx(void)
     CHECK(ev && ev[1] == TX_NO_ACK);
 }
 
+/* An Enhanced ACK teaches the device's channel sample; an anchored job then goes
+ * behind a short train centred on a later sample, handed to the radio only just
+ * before it. The RAT wraps on the way. */
+static void test_coordinator_anchor(void)
+{
+    static struct coordinator c;
+    const uint8_t *coord = V("in.coord_eui")->data, *joiner = V("in.joiner_eui")->data;
+    static const uint8_t pkt[2] = {0x7e, 0x33};
+    const uint32_t step = WAKE_STEP_US * 4u;
+    uint8_t tx[1 + 8 + sizeof pkt], ack[MAC_ENH_ACK_LEN];
+    size_t len;
+    coord_init(&c);
+    now_ms = 1000;
+    now_rat = 0xfff00000u; /* wraps 1048576 ticks (262 ms) from now */
+    configure(&c, 0);
+    tx[0] = 2 << 4; /* anchored train */
+    memcpy(&tx[1], joiner, 8);
+    memcpy(&tx[9], pkt, sizeof pkt);
+
+    /* No anchor yet: a full train at once. */
+    reset_stubs();
+    host_request(&c, 1, HL_TX, tx, sizeof tx);
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_wake_frames == MAC_TRAIN_FULL && job_start == now_rat + CHAIN_LEAD_RAT);
+
+    /* Its ACK, after the wrap, says the device sampled 100 units (32 ms)
+     * before the ACK ended. */
+    uint32_t ack_end = now_rat + 4100000u;
+    now_rat = ack_end;
+    now_ms += 1030;
+    mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
+    coord_on_rx(&c, ack, sizeof ack, -50, ack_end);
+    const uint8_t *ev = host_frame(HL_EV_TX_DONE, 0, &len);
+    CHECK(ev && ev[1] == TX_ACKED);
+    uint32_t sample = ack_end - 100u * CSL_UNIT_RAT;
+
+    /* The next job waits for the device's next sample: 21 frames centred on
+     * it, handed over JOB_LEAD_RAT before the first. */
+    reset_stubs();
+    now_rat += 300000u;
+    host_request(&c, 2, HL_TX, tx, sizeof tx);
+    coord_poll(&c);
+    uint32_t first = sample + CSL_PERIOD_RAT - 10u * step;
+    now_rat = first - JOB_LEAD_RAT - 1u;
+    coord_poll(&c);
+    CHECK(jobs == 0);
+    now_rat = first - JOB_LEAD_RAT;
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_wake_frames == 21 && job_start == first);
+
+    /* No ACK is a miss: the next job goes behind a full train, at once. */
+    coord_on_job_sent(&c, job_token, true);
+    now_ms += ACK_WAIT_MS;
+    coord_poll(&c);
+    ev = host_frame(HL_EV_TX_DONE, 0, &len);
+    CHECK(ev && ev[1] == TX_NO_ACK);
+    reset_stubs();
+    host_request(&c, 3, HL_TX, tx, sizeof tx);
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_wake_frames == MAC_TRAIN_FULL);
+
+    /* Its ACK renews the anchor. A main loop that comes back after the train
+     * should have started moves the job to the sample a period later. */
+    ack_end = now_rat + 4100000u;
+    now_rat = ack_end;
+    mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
+    coord_on_rx(&c, ack, sizeof ack, -50, ack_end);
+    reset_stubs();
+    host_request(&c, 4, HL_TX, tx, sizeof tx);
+    coord_poll(&c);
+    first = ack_end - 100u * CSL_UNIT_RAT + CSL_PERIOD_RAT - 10u * step;
+    now_rat = first + 2u * RAT_PER_MS;
+    coord_poll(&c);
+    CHECK(jobs == 0);
+    now_rat = first + CSL_PERIOD_RAT - JOB_LEAD_RAT;
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_wake_frames == 21 && job_start == first + CSL_PERIOD_RAT);
+    CHECK(c.stats.jobs_anchored == 2);
+
+    /* A full train is still a full train when the host asks for one. */
+    coord_on_job_sent(&c, job_token, true);
+    mac_build_enh_ack(ack, c.queue[0].seq, coord, joiner, 100);
+    coord_on_rx(&c, ack, sizeof ack, -50, now_rat);
+    reset_stubs();
+    tx[0] = 1 << 4;
+    host_request(&c, 5, HL_TX, tx, sizeof tx);
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_wake_frames == MAC_TRAIN_FULL);
+}
+
 static void test_coordinator_job_recovery(void)
 {
     static struct coordinator c;
@@ -644,7 +745,7 @@ static uint32_t stat(struct coordinator *c, int i)
     host_out_len = 0;
     host_request(c, seq++, HL_STATS, NULL, 0);
     const uint8_t *r = host_frame(HL_STATS | HL_REPLY_FLAG, 0, &len);
-    if (!r || len != 1 + 52 || r[0] != HL_OK)
+    if (!r || len != 1 + 56 || r[0] != HL_OK)
         return 0xffffffffu;
     const uint8_t *v = &r[1 + 4 * i];
     return v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24;
@@ -653,6 +754,7 @@ static uint32_t stat(struct coordinator *c, int i)
 enum {
     S_RX_OK, S_RX_CRC_FAIL, S_RX_UNVERIFIED, S_BEACONS, S_ACKS, S_REFUSED, S_JOBS_OK,
     S_JOBS_FAILED, S_JOBS_TIMED_OUT, S_RADIO_ERRORS, S_LINK_CRC, S_LINK_RESYNCS, S_ACKS_LATE,
+    S_JOBS_ANCHORED,
 };
 
 static void test_stats_and_log(void)
@@ -792,6 +894,7 @@ int main(int argc, char **argv)
     test_coordinator_beacon_window();
     test_coordinator_key_fallback();
     test_coordinator_tx();
+    test_coordinator_anchor();
     test_coordinator_job_recovery();
     test_stats_and_log();
     printf("%d checks, %d failures\n", checks, failures);

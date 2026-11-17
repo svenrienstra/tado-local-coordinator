@@ -4,11 +4,12 @@ Real-time radio tier. Owns everything with a deadline: PHY TX/RX (RF core,
 RAT-timed), the tado MAC (Data frames, wake-up trains, unsecured Enhanced-ACK,
 Enhanced Beacon answer), AES-CCM* (sole encryptor of outgoing link frames; seq
 and frame counter allocation), and the host link (`../docs/HOSTLINK.md`).
-Later: anchored CSL timing (M0), flash-persisted counters, cached Router
-Advertisements and the autonomy layer (M4). See `../docs/PLAN.md`.
+It also keeps CSL anchors: a device's channel sample, learnt from the phase in
+its Enhanced ACKs, so that a reply goes behind a short train on that sample.
+Later: flash-persisted counters, cached Router Advertisements and the autonomy
+layer (M4). See `../docs/PLAN.md`.
 
-Current scope: **M-1** (`../docs/JOIN.md` steps 1-7) on a CC1312R1 board (`../docs/WIRING.md`)
-over USB.
+Current scope: **M-1 and M0** on a CC1312R1 board (`../docs/WIRING.md`) over USB.
 
 ## Layout
 
@@ -51,20 +52,25 @@ the tests reproduce each frame byte for byte.
 Safety: the CCFG leaves debug access enabled and the bootloader on; never
 enable read-out or debug locks.
 
-## Not yet confirmed on hardware
+## On air (2026-11-17)
 
-The frames are byte-exact against freedo, but the radio layer has not been on
-air yet. To check on the bench first, in this order:
+Confirmed with a wireless temperature sensor and against the commercial bridge's
+traffic, timed on this radio with a `make SNIFF=1` build:
 
-1. PHY match with a real valve: sync word `D391` sent twice (32 bits, freedo's
-   CC1101 "30/32" mode), preamble polarity, 1-byte length semantics, and the
-   default prop-mode CRC-16 being CC1101-compatible (poly 0x8005, init 0xFFFF).
+- PHY: frames in both directions decode; the join, reports, `time` and replies
+  work.
+- RX timestamp: the RF core dates a packet at its first preamble bit, so the
+  frame ends `ts + (preamble 4 + sync 4 + 1 + len + 2) x 640` RAT ticks later. A
+  frame reaches the main loop about 0.49 ms after its end.
+- Enhanced ACK: sent from the clear header before the MIC check, 0.55 ms after
+  the frame; the bridge's starts 0.35-0.45 ms after.
+- Trains: wake-up frames every 3968 us (12.4 rendezvous units), the Data frame
+  0.52 ms (broadcast) or 0.82 ms (unicast) after the last wake-up frame ends.
+  A full train takes 1.05 s. An anchored train is 21 frames, rendezvous 248 to
+  0, centred on the device's sample; it reached the sensor 9 times out of 9.
+
+Still open:
+
+1. Frequency: 868.300 MHz from `CONFIG`. Below it we stop hearing the sensor,
+   so the devices may sit higher (freedo's CC1101 sits at 868.324 MHz).
 2. RX bandwidth code `rxBw = 0x55` (~137 kHz intended) and `biasMode`.
-3. Frequency: 868.300 MHz from `CONFIG`; freedo's CC1101 sits at 868.324 MHz.
-4. RX timestamp: assumed to mark the sync word, so the frame end is
-   `ts + (len + 3) x 640` RAT ticks. The beacon (3 ms) and ACK (0.5 ms) delays
-   hang off it.
-5. Wake-up trains: 254 chained `CMD_PROP_TX` at 4.0 ms (each frame ~3.4 ms on
-   air), Data 12 ms after the last; check the spacing on a logic analyser.
-6. The Enhanced ACK is best effort: aborting RX and posting the TX chain from
-   the main loop may miss the 0-1 ms gap. That is M0's work.

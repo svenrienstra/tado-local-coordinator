@@ -18,13 +18,14 @@
 #define RAT_PER_US         4u
 #define RAT_PER_BYTE       (8u * 20u * RAT_PER_US) /* 50 kbps */
 #define WAKE_STEP_RAT      (WAKE_STEP_US * RAT_PER_US)
-/* The Data frame starts 0.52 ms after the last wake-up frame ends, as the
- * commercial bridge's after a full train: a device wakes on the rendezvous the
- * train announced and listens only briefly. A wake-up frame is preamble 4 +
- * sync 4 + length 1 + 12 + CRC 2 bytes on air. */
+/* The Data frame starts this long after the last wake-up frame ends, as the
+ * commercial bridge's (measured on our radio): 0.52 ms for a broadcast, a median
+ * 0.82 ms for a unicast. A device wakes on the rendezvous the train announced
+ * and listens only briefly. A wake-up frame is preamble 4 + sync 4 + length 1 +
+ * 12 + CRC 2 bytes on air. */
 #define WAKE_AIR_RAT       ((4u + 4u + 1u + MAC_WAKEUP_LEN + 2u) * RAT_PER_BYTE)
-#define DATA_AFTER_WAKE    (WAKE_AIR_RAT + 520u * RAT_PER_US)
-#define CHAIN_LEAD_RAT     (2u * RAT_PER_MS)       /* time to set up a chain */
+#define DATA_GAP_BROADCAST (520u * RAT_PER_US)
+#define DATA_GAP_UNICAST   (820u * RAT_PER_US)
 
 /* RF queue entries: length byte, frame, RSSI, 4-byte RAT timestamp. */
 #define ENTRY_DATA  (1 + MAC_MAX_FRAME + 1 + 4)
@@ -284,18 +285,20 @@ bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start)
     return true;
 }
 
-bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t n_wake,
+bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t n_wake, uint32_t rat_start,
                     const uint8_t *frame, size_t len, uint8_t token)
 {
     if (job != JOB_NONE || tx_pending() || n_wake > MAC_TRAIN_FULL)
         return false;
-    uint32_t t = RF_getCurrentTime() + CHAIN_LEAD_RAT;
+    uint32_t t = rat_start;
     for (unsigned i = 0; i < n_wake; i++) {
-        mac_build_wakeup(wake_frames[i], seq, dst_short, mac_train_rendezvous((int)i));
+        mac_build_wakeup(wake_frames[i], seq, dst_short, mac_train_rendezvous((int)i, (int)n_wake));
         set_tx(&tx_cmds[i], wake_frames[i], MAC_WAKEUP_LEN, t + i * WAKE_STEP_RAT);
     }
+    bool broadcast = dst_short[0] == 0xff && dst_short[1] == 0xff;
     if (n_wake > 0)
-        t += (n_wake - 1u) * WAKE_STEP_RAT + DATA_AFTER_WAKE;
+        t += (n_wake - 1u) * WAKE_STEP_RAT + WAKE_AIR_RAT +
+             (broadcast ? DATA_GAP_BROADCAST : DATA_GAP_UNICAST);
     memcpy(tx_frame, frame, len);
     set_tx(&tx_cmds[n_wake], tx_frame, len, t);
     job_token = token;

@@ -18,6 +18,7 @@ static const uint8_t EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 #define TXF_TRAIN_MASK  0x30
 #define TRAIN_NONE      0
 #define TRAIN_FULL      1
+#define TRAIN_ANCHORED  2 /* short train on the device's sample; full when unknown */
 
 /* RX event flags. */
 #define RXF_PAIRING_KEY 0x01
@@ -25,6 +26,104 @@ static const uint8_t EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 #define RXF_ACKED       0x04
 
 static bool before(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
+
+/* The RAT extended to 64 bits. Called from every main-loop pass, far more
+ * often than the 32-bit RAT wraps. */
+static uint64_t rat_now64(struct coordinator *c)
+{
+    uint32_t now = radio_rat_now();
+    if (now < c->rat_last)
+        c->rat_high += 1ull << 32;
+    c->rat_last = now;
+    return c->rat_high | now;
+}
+
+/* A recent 32-bit RAT time (less than half a wrap ago) in 64 bits. */
+static uint64_t rat_past64(struct coordinator *c, uint32_t rat)
+{
+    uint64_t now = rat_now64(c);
+    return now - (uint32_t)((uint32_t)now - rat);
+}
+
+static struct anchor *anchor_find(struct coordinator *c, const uint8_t short_addr[2])
+{
+    for (size_t i = 0; i < ANCHORS; i++) {
+        struct anchor *a = &c->anchors[i];
+        if (a->valid && memcmp(a->short_addr, short_addr, 2) == 0)
+            return a;
+    }
+    return NULL;
+}
+
+/* Learns a device's sample from its Enhanced ACK, which ended at ack_end. */
+static void anchor_store(struct coordinator *c, const uint8_t short_addr[2], uint64_t ack_end,
+                         uint16_t phase)
+{
+    struct anchor *a = anchor_find(c, short_addr);
+    for (size_t i = 0; a == NULL && i < ANCHORS; i++)
+        if (!c->anchors[i].valid)
+            a = &c->anchors[i];
+    if (a == NULL) { /* evict the least recently refreshed */
+        a = &c->anchors[0];
+        for (size_t i = 1; i < ANCHORS; i++)
+            if (c->anchors[i].refresh < a->refresh)
+                a = &c->anchors[i];
+    }
+    /* Only the phase modulo one period counts: every later sample is a period
+     * apart. */
+    uint64_t back = (uint64_t)phase * CSL_UNIT_RAT % CSL_PERIOD_RAT;
+    a->valid = true;
+    memcpy(a->short_addr, short_addr, 2);
+    a->sample = ack_end >= back ? ack_end - back : ack_end + CSL_PERIOD_RAT - back;
+    a->refresh = ack_end;
+    a->misses = 0;
+}
+
+static void anchor_miss(struct coordinator *c, const uint8_t short_addr[2])
+{
+    struct anchor *a = anchor_find(c, short_addr);
+    if (a && ++a->misses >= ANCHOR_MISS_LIMIT)
+        a->valid = false;
+}
+
+/* Half the short train around a sample: the base guard plus the drift that can
+ * build up since the anchor was learnt. */
+static uint64_t anchor_guard(const struct anchor *a, uint64_t sample)
+{
+    uint64_t age = sample > a->refresh ? sample - a->refresh : 0;
+    uint64_t guard = ANCHOR_GUARD_RAT + age * ANCHOR_GUARD_PPM / 1000000u;
+    return guard < ANCHOR_GUARD_MAX_RAT ? guard : ANCHOR_GUARD_MAX_RAT;
+}
+
+/* Fixes a job's train: a short one centred on the device's first sample whose
+ * train can still start JOB_LEAD_RAT from now, else a full one at once. */
+static void schedule_job(struct coordinator *c, struct tx_job *j, uint64_t now)
+{
+    struct anchor *a = j->unicast && j->train == TRAIN_ANCHORED ? anchor_find(c, j->dst_short) : NULL;
+    j->scheduled = true;
+    j->anchored = a != NULL && a->misses == 0;
+    if (!j->anchored) {
+        j->wake_frames = j->train == TRAIN_NONE ? 0 : MAC_TRAIN_FULL;
+        return; /* starts when handed to the radio */
+    }
+    uint64_t step = (uint64_t)WAKE_STEP_US * (RAT_PER_MS / 1000u);
+    uint64_t sample = a->sample;
+    if (sample < now)
+        sample += (now - sample + CSL_PERIOD_RAT - 1) / CSL_PERIOD_RAT * CSL_PERIOD_RAT;
+    for (;;) {
+        uint64_t guard = anchor_guard(a, sample);
+        unsigned n = (unsigned)(2u * guard / step) + 1u;
+        if (n > MAC_TRAIN_FULL)
+            n = MAC_TRAIN_FULL;
+        uint64_t start = sample - (n - 1u) * step / 2u;
+        if (start >= now + JOB_LEAD_RAT) {
+            j->wake_frames = (uint16_t)n;
+            j->start = start;
+            return;
+        }
+        sample += CSL_PERIOD_RAT;
+    }
+}
 
 static bool pair_window_open(struct coordinator *c)
 {
@@ -99,6 +198,8 @@ static void tx_done(struct coordinator *c, enum tx_result result)
     } else {
         c->stats.jobs_failed++;
         log_job(c, ev[0], result == TX_NO_ACK ? "no-ack" : "radio-error");
+        if (result == TX_NO_ACK)
+            anchor_miss(c, c->queue[0].dst_short);
     }
     memmove(&c->queue[0], &c->queue[1], (c->queue_len - 1) * sizeof c->queue[0]);
     c->queue_len--;
@@ -129,8 +230,8 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
         return HL_BAD_ARG;
     uint8_t flags = p[0];
     unsigned train = (flags & TXF_TRAIN_MASK) >> TXF_TRAIN_SHIFT;
-    if (train != TRAIN_NONE && train != TRAIN_FULL)
-        return HL_BAD_ARG; /* anchored short trains come with M0 */
+    if (train > TRAIN_ANCHORED)
+        return HL_BAD_ARG;
     if (c->queue_len == TX_QUEUE_LEN)
         return HL_BUSY;
 
@@ -152,7 +253,8 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
         mac_short_addr(dst, job->dst_short);
     else
         job->dst_short[0] = job->dst_short[1] = 0xff;
-    job->wake_frames = train == TRAIN_FULL ? MAC_TRAIN_FULL : 0;
+    job->train = (uint8_t)train;
+    job->scheduled = false;
     job->handle = c->next_handle++;
     c->queue_len++;
 
@@ -167,7 +269,7 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
 
 static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
 {
-    uint32_t v[13];
+    uint32_t v[14];
     _Static_assert(sizeof v <= HL_MAX_REPLY, "STATS reply exceeds HL_MAX_REPLY");
     radio_rx_counts(&v[0], &v[1]);
     v[2] = c->stats.rx_unverified;
@@ -181,7 +283,8 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     v[10] = c->link.crc_errors;
     v[11] = c->link.resyncs;
     v[12] = c->stats.acks_late;
-    for (size_t i = 0; i < 13; i++)
+    v[13] = c->stats.jobs_anchored;
+    for (size_t i = 0; i < 14; i++)
         put32(&reply[4 * i], v[i]);
     *reply_len = sizeof v;
 }
@@ -396,8 +499,10 @@ static void receive_ack(struct coordinator *c, const uint8_t *frame, size_t len,
      * It counts before the radio reports the Data frame done: both can arrive
      * in the same main-loop pass, in either order. */
     if (c->job_on_air && c->queue[0].unicast && seq == c->queue[0].seq &&
-        memcmp(dst, c->eui, 8) == 0)
+        memcmp(dst, c->eui, 8) == 0) {
+        anchor_store(c, c->queue[0].dst_short, rat_past64(c, rat_end), mac_enh_ack_phase(frame));
         tx_done(c, TX_ACKED);
+    }
 #ifdef SNIFF
     if (memcmp(dst, c->eui, 8) != 0)
         report_unverified(c, frame, len, rssi, rat_end); /* another coordinator's ACK */
@@ -472,11 +577,25 @@ void coord_poll(struct coordinator *c)
         log_send(c, &l);
         tx_done(c, TX_RADIO_ERROR);
     }
+    uint64_t now = rat_now64(c);
     if (c->queue_len > 0 && !c->job_on_air) {
         struct tx_job *j = &c->queue[0];
-        if (radio_send_job(j->dst_short, j->seq, j->wake_frames, j->frame, j->len, j->handle)) {
+        if (!j->scheduled)
+            schedule_job(c, j, now);
+        if (j->anchored && now + RAT_PER_MS > j->start)
+            schedule_job(c, j, now); /* the main loop came too late: next sample */
+        /* Without an anchor the train starts at once: a start the radio sees in
+         * the past would send every frame back to back. */
+        if (!j->anchored)
+            j->start = now + CHAIN_LEAD_RAT;
+        if (now + JOB_LEAD_RAT >= j->start &&
+            radio_send_job(j->dst_short, j->seq, j->wake_frames, (uint32_t)j->start, j->frame,
+                           j->len, j->handle)) {
             c->job_on_air = true;
-            c->job_deadline_ms = platform_ms() + job_airtime_ms(j);
+            c->job_deadline_ms = platform_ms() + (uint32_t)((j->start - now) / RAT_PER_MS) +
+                                 job_airtime_ms(j);
+            if (j->anchored)
+                c->stats.jobs_anchored++;
         }
     }
 }

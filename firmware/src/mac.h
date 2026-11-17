@@ -40,8 +40,10 @@ void mac_short_addr(const uint8_t eui[8], uint8_t out[2]);
 void mac_build_wakeup(uint8_t out[MAC_WAKEUP_LEN], uint8_t seq, const uint8_t dst_short[2],
                       uint16_t rendezvous);
 
-/* Rendezvous time of wake-up frame i of a full train: 3125 down to 0. */
-uint16_t mac_train_rendezvous(int i);
+/* Rendezvous time of wake-up frame i of an n-frame train, as the commercial
+ * bridge sends them: a full train spreads 3125 down to 0, a shorter one steps
+ * 12.4 units (the 3968 us frame step), 248 down to 0 for 21 frames. */
+uint16_t mac_train_rendezvous(int i, int n);
 
 void mac_build_enh_ack(uint8_t out[MAC_ENH_ACK_LEN], uint8_t seq, const uint8_t dst[8],
                        const uint8_t src[8], uint16_t csl_phase);
@@ -91,6 +93,10 @@ bool mac_open_data(const uint8_t *frame, size_t len, const uint8_t key[16],
  * bytes of a tado EUI, carried encrypted, are always c5 1b 00. */
 bool mac_ack_request(const uint8_t *frame, size_t len, const uint8_t eui[8], uint8_t *seq,
                      uint8_t src[8]);
+
+/* The CSL phase an Enhanced ACK carries: 320 us units from the sender's
+ * last channel sample back from the end of the ACK. */
+uint16_t mac_enh_ack_phase(const uint8_t ack[MAC_ENH_ACK_LEN]);
 
 /* Reads an Enhanced ACK; false on a bad length or FCS. */
 bool mac_parse_enh_ack(const uint8_t *frame, size_t len, uint8_t *seq, uint8_t dst[8]);

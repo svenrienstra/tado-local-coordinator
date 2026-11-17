@@ -57,7 +57,7 @@ reply (v0 accepts loss of an event; RX frames are retransmitted by devices).
 | 0 | secure under the **pairing** key (else the network key) |
 | 1 | broadcast (FCF `49e8`, dst `ffff`) instead of unicast (FCF `69ec`) |
 | 2 | Frame Pending (`79ec` / `59e8`) |
-| 4-5 | wake-up train: 0 none, 1 full (254 frames, 1.003 s), 2 short (anchored, 21 frames; M0, not in v0 — answers status `0x01`) |
+| 4-5 | wake-up train: 0 none, 1 full (254 frames, 1.003 s), 2 anchored: a short train (21 frames, 79 ms) centred on the device's next channel sample, which the CC1312 learns from the phase in the device's Enhanced ACKs; a full train while it knows none or after a missed ACK. An anchored job waits in the queue for that sample, up to about 1 s |
 
 The CC1312 allocates `mac_seq` and `counter`, wraps the packet (unicast:
 `coord_eui[5:8]` `04` `counter` packet FCS; broadcast: `counter >> 16` (u16)
@@ -85,6 +85,7 @@ knows, so firmware may append new ones):
 | 10 | `link_crc_errors` | host-link frames dropped for a bad CRC |
 | 11 | `link_resyncs` | bytes skipped while searching for a frame start |
 | 12 | `acks_late` | Enhanced ACKs posted after their start time (sent late; the device may not take them) |
+| 13 | `jobs_anchored` | TX jobs sent behind a short train on the device's channel sample |
 
 ## Events (CC1312 -> host)
 
