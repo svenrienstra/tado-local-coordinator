@@ -2,8 +2,6 @@ package tadocoord.tado;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -144,13 +142,17 @@ public final class ConfigDocuments {
         return s.append("]/z/").toString();
     }
 
-    /** The document's ETag: the device only compares it. */
+    /**
+     * The document's ETag, FNV-1a 64 big-endian: the device only compares it, and the gateway
+     * computes the same in C (gateway/core/tado.c).
+     */
     public static byte[] etag(byte[] document) {
-        try {
-            return Arrays.copyOf(MessageDigest.getInstance("SHA-256").digest(document), 8);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
+        long h = 0xcbf29ce484222325L;
+        for (byte b : document) {
+            h ^= b & 0xff;
+            h *= 0x100000001b3L;
         }
+        return java.nio.ByteBuffer.allocate(8).putLong(h).array();
     }
 
     /**

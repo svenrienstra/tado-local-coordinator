@@ -1,5 +1,6 @@
-# firmware build output
+# firmware and gateway build output
 firmware/**/build/
+gateway/**/build/
 *.o
 *.elf
 *.hex

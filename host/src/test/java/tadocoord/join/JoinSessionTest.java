@@ -355,12 +355,18 @@ class JoinSessionTest {
                         CoapMessage.path("12"), CoapMessage.path("overlay")),
                 java.util.HexFormat.of().parseHex("62800208346240010262600101"));
         serving.onEvent(fromJoiner(false, other)); // zone 12 is not the joiner's
+        byte[] w = joiner.wire();
+        w[0] ^= 1;
+        Eui notOwner = new Eui(w);
+        byte[] fromOther = Datagram.udp(notOwner, coordinator, 5683, 5683,
+                overlayPut(0x0325, "62800208346240010262600101").encode());
+        serving.onEvent(new Event.Rx(false, false, true, -50, 2, notOwner, 2, 0, fromOther)); // zone 11, not its owner
         now = now.plusSeconds(120);
         serving.tick();
-        assertEquals(3, unicasts().size()); // three 2.04s, no write
+        assertEquals(4, unicasts().size()); // four 2.04s, no write
 
         serving.onEvent(fromJoiner(false, get(0x0324, "h", "4242", "z", "11", "s")));
-        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800), coap(unicasts().get(3)).payload());
+        assertArrayEquals(tadocoord.tado.ConfigDocuments.zoneState(1800), coap(unicasts().get(4)).payload());
     }
 
     @Test

@@ -1,13 +1,10 @@
 package tadocoord.join;
 
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -546,12 +543,11 @@ public final class JoinSession {
         return !clock.instant().isBefore(lastRaEnded.plus(RA_MIN_GAP));
     }
 
-    /** Stable per device, so a restart serves the same id (as freedo does). */
+    /**
+     * Stable per device, so a restart serves the same id (as freedo does): FNV-1a 64 of its EUI,
+     * as the gateway computes it in C.
+     */
     static byte[] sessionId(Eui device) {
-        try {
-            return Arrays.copyOf(MessageDigest.getInstance("SHA-256").digest(device.wire()), 8);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
+        return ConfigDocuments.etag(device.wire());
     }
 }
