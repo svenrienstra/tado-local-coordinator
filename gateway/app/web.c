@@ -1,50 +1,46 @@
 #include "web.h"
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "hexstr.h"
+#include "out.h"
 
-/* --- writing JSON into a bounded buffer ------------------------------------- */
+/* --- answers ---------------------------------------------------------------- */
 
-struct out {
-    char *buf;
-    size_t cap, len;
-    bool full;
-};
-
-static void put(struct out *o, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-
-static void put(struct out *o, const char *fmt, ...)
+static void reset(struct out *o)
 {
-    if (o->full)
-        return;
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(o->buf + o->len, o->cap - o->len, fmt, ap);
-    va_end(ap);
-    if (n < 0 || (size_t)n >= o->cap - o->len)
-        o->full = true;
-    else
-        o->len += (size_t)n;
+    o->len = 0;
+    o->full = false;
 }
 
 static int answer(struct out *o, int status, const char *error)
 {
     if (error) {
-        o->len = 0;
-        o->full = false;
+        reset(o);
         put(o, "{\"error\":\"%s\"}", error);
     }
     if (o->full) {
-        o->len = 0;
-        o->full = false;
+        reset(o);
         put(o, "{\"error\":\"answer too long\"}");
         return 500;
     }
     return status;
+}
+
+static int ok(struct out *o)
+{
+    put(o, "{}");
+    return answer(o, 200, NULL);
+}
+
+/* What a ha_*_state writer wrote into o, in place. */
+static void wrote(struct out *o, size_t n)
+{
+    if (n == 0)
+        o->full = true;
+    o->len += n;
 }
 
 /* --- the state -------------------------------------------------------------- */
@@ -60,7 +56,7 @@ static const char *pair_state(enum gateway_pair_state s)
 
 static void put_state(struct gateway *g, struct out *o)
 {
-    char e[17], json[512];
+    char e[17];
     put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,", g->configured ? "true" : "false",
         g->ops.unix_time(g->ops.ctx) ? "true" : "false", (unsigned long)g->id.home_id);
     put(o, "\"pair\":{\"state\":\"%s\",\"left\":%lu", pair_state(g->pair), (unsigned long)gateway_pair_left(g));
@@ -72,10 +68,11 @@ static void put_state(struct gateway *g, struct out *o)
         const struct gateway_room *r = &g->rooms[i];
         if (!r->used)
             continue;
-        if (!ha_zone_state(json, sizeof json, &r->r))
-            strcpy(json, "{}");
-        put(o, "%s{\"zone\":%u,\"name\":\"%s\",\"setpoint\":%u,\"state\":%s}", first ? "" : ",", r->zone, r->name,
-            r->setpoint, json);
+        put(o, "%s{\"zone\":%u,\"name\":\"%s\",\"setpoint\":%u,\"state\":", first ? "" : ",", r->zone, r->name,
+            r->setpoint);
+        if (!o->full)
+            wrote(o, ha_zone_state(o->buf + o->len, o->cap - o->len, &r->r));
+        put(o, "}");
         first = false;
     }
     put(o, "],\"devices\":[");
@@ -84,27 +81,17 @@ static void put_state(struct gateway *g, struct out *o)
         const struct gateway_device *d = &g->devices[i];
         if (!d->used)
             continue;
-        if (!ha_device_state(json, sizeof json, &d->d))
-            strcpy(json, "{}");
-        put(o, "%s{\"eui\":\"%s\",\"serial\":\"%s\",\"zone\":%u,\"waiting\":%s,\"state\":%s}", first ? "" : ",",
-            eui_str(d->eui, e), d->d.serial, d->zone, d->waiting ? "true" : "false", json);
+        put(o, "%s{\"eui\":\"%s\",\"serial\":\"%s\",\"zone\":%u,\"waiting\":%s,\"state\":", first ? "" : ",",
+            eui_str(d->eui, e), d->d.serial, d->zone, d->waiting ? "true" : "false");
+        if (!o->full)
+            wrote(o, ha_device_state(o->buf + o->len, o->cap - o->len, &d->d));
+        put(o, "}");
         first = false;
     }
     put(o, "]}");
 }
 
 /* --- requests --------------------------------------------------------------- */
-
-static int hex_digit(char c)
-{
-    if (c >= '0' && c <= '9')
-        return c - '0';
-    if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
-    return -1;
-}
 
 bool web_form(const char *body, size_t len, const char *key, char *out, size_t cap)
 {
@@ -146,19 +133,6 @@ static int number(const char *s)
     return *s && *end == '\0' && v <= 255 && s[0] != '-' && s[0] != '+' ? (int)v : -1;
 }
 
-static bool parse_eui(const char *s, size_t len, uint8_t eui[8])
-{
-    if (len != 16)
-        return false;
-    for (size_t i = 0; i < 8; i++) {
-        int hi = hex_digit(s[2 * i]), lo = hex_digit(s[2 * i + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        eui[i] = (uint8_t)(hi << 4 | lo);
-    }
-    return true;
-}
-
 static int rooms(struct gateway *g, const char *rest, const char *body, size_t len, struct out *o)
 {
     char name[INSTALL_NAME_MAX + 2];
@@ -174,15 +148,11 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
     }
     if (*rest++ != '/')
         return answer(o, 404, "not found");
-    char digits[4] = {0};
-    size_t n = strcspn(rest, "/");
-    if (n == 0 || n >= sizeof digits)
+    char *end;
+    unsigned long zone = rest[0] >= '0' && rest[0] <= '9' ? strtoul(rest, &end, 10) : 0;
+    if (zone == 0 || zone > 255 || (*end != '\0' && *end != '/') || !gateway_room(g, (uint8_t)zone))
         return answer(o, 404, "no such room");
-    memcpy(digits, rest, n);
-    int zone = number(digits);
-    if (zone <= 0 || !gateway_room(g, (uint8_t)zone))
-        return answer(o, 404, "no such room");
-    rest += n;
+    rest = end;
     if (strcmp(rest, "/delete") == 0) {
         gateway_delete_room(g, (uint8_t)zone);
     } else if (*rest == '\0') {
@@ -191,23 +161,21 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
     } else {
         return answer(o, 404, "not found");
     }
-    put(o, "{}");
-    return answer(o, 200, NULL);
+    return ok(o);
 }
 
 static int devices(struct gateway *g, const char *rest, const char *body, size_t len, struct out *o)
 {
     uint8_t eui[8];
     char value[8];
-    if (*rest++ != '/' || !parse_eui(rest, strlen(rest), eui) || !gateway_device(g, eui))
+    if (*rest++ != '/' || !eui_parse(rest, strlen(rest), eui) || !gateway_device(g, eui))
         return answer(o, 404, "no such device");
     int zone = web_form(body, len, "zone", value, sizeof value) ? number(value) : -1;
     if (zone < 0)
         return answer(o, 400, "zone required");
     if (!gateway_assign(g, eui, (uint8_t)zone))
         return answer(o, 409, "no such room, or it has a device");
-    put(o, "{}");
-    return answer(o, 200, NULL);
+    return ok(o);
 }
 
 int web_handle(struct gateway *g, const char *method, const char *path, const char *body, size_t body_len,
@@ -224,14 +192,13 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
         return answer(&o, get ? 404 : 405, get ? "not found" : "method not allowed");
     if (strcmp(path, "/api/pair") == 0) {
         if (!gateway_pair(g, GATEWAY_PAIR_WINDOW_S))
-            return answer(&o, 409, "no pair window: the cc1312 is not ready or a device is joining");
-        put(&o, "{}");
-        return answer(&o, 200, NULL);
+            return answer(&o, 409, "no pair window: the radio is not ready, a device is joining, or the device "
+                                   "table is full");
+        return ok(&o);
     }
     if (strcmp(path, "/api/pair/close") == 0) {
         gateway_close_pair(g);
-        put(&o, "{}");
-        return answer(&o, 200, NULL);
+        return ok(&o);
     }
     if (strncmp(path, "/api/rooms", 10) == 0)
         return rooms(g, path + 10, body, body_len, &o);

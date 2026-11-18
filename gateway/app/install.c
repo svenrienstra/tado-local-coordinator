@@ -27,13 +27,16 @@ size_t install_encode(const struct install *in, uint8_t *out, size_t cap)
         out[n++] = (uint8_t)(byte);   \
     } while (0)
     PUT(INSTALL_VERSION);
+    PUT(in->next_zone);
     PUT(in->n_rooms);
     for (size_t i = 0; i < in->n_rooms; i++) {
         const struct install_room *r = &in->rooms[i];
         size_t len = strlen(r->name);
         PUT(r->zone);
-        PUT(r->setpoint);
-        PUT(r->setpoint >> 8);
+        if (cap - n < 2)
+            return 0;
+        put16(&out[n], r->setpoint);
+        n += 2;
         PUT(len);
         for (size_t k = 0; k < len; k++)
             PUT(r->name[k]);
@@ -67,10 +70,11 @@ static bool take_string(const uint8_t *blob, size_t len, size_t *at, char *out, 
 
 static bool decode(const uint8_t *blob, size_t len, struct install *in)
 {
-    size_t at = 2;
-    if (len < 2 || blob[0] != INSTALL_VERSION || blob[1] > INSTALL_MAX_ROOMS)
+    size_t at = 3;
+    if (len < 3 || blob[0] != INSTALL_VERSION || blob[2] > INSTALL_MAX_ROOMS)
         return false;
-    in->n_rooms = blob[1];
+    in->next_zone = blob[1];
+    in->n_rooms = blob[2];
     for (size_t i = 0; i < in->n_rooms; i++) {
         struct install_room *r = &in->rooms[i];
         if (len - at < 3)

@@ -41,7 +41,6 @@ struct gateway_identity {
     uint32_t counter_floor;  /* the next unreserved frame counter */
     uint32_t channel_khz;
     uint32_t home_id;
-    struct install install;  /* rooms and devices; save_install keeps it */
 };
 
 struct gateway_ops {
@@ -82,10 +81,11 @@ struct gateway {
     uint32_t next_config_ms;  /* when to try again after a failed CONFIG */
     struct gwlink_event ev;   /* the event being handled */
 
-    bool pairing;             /* a pair window the gateway opened is running */
     enum gateway_pair_state pair;
     uint32_t pair_until_ms;
     uint8_t pair_joined[8];
+    uint8_t refused[8];       /* the last device the full table turned away */
+    uint8_t next_zone;        /* where a new room's number is looked for */
 
     /* The joined devices and the rooms, with what goes to Home Assistant:
      * published at the end of gateway_run when dirty, so a device's answer
@@ -110,8 +110,9 @@ struct gateway {
 };
 
 /* A free-running millisecond clock comes in through link_ops.now_ms. */
-void gateway_init(struct gateway *g, const struct gateway_identity *id, const struct gateway_ops *ops,
-                  const struct gwlink_ops *link_ops);
+/* in: the rooms and devices saved last (save_install), read here only. */
+void gateway_init(struct gateway *g, const struct gateway_identity *id, const struct install *in,
+                  const struct gateway_ops *ops, const struct gwlink_ops *link_ops);
 
 /* Fills a new identity: a random coordinator EUI ending in c5 1b 00, a random
  * network key and home id, counter floor 1, the default carrier. */
@@ -122,15 +123,16 @@ void gateway_new_identity(struct gateway_identity *id, void (*rng)(void *ctx, ui
 void gateway_run(struct gateway *g, uint32_t timeout_ms);
 
 /* Opens a pair window of `seconds`; the device that joins goes in no room.
- * The setup page and tado/gateway/pair/set call it. */
+ * False while a device joins or the device table is full. The setup page
+ * and tado/gateway/pair/set call it. */
 bool gateway_pair(struct gateway *g, uint16_t seconds);
 void gateway_close_pair(struct gateway *g);
 
 /* Seconds the pair window has left, 0 when none runs. */
 uint32_t gateway_pair_left(struct gateway *g);
 
-/* Rooms (setup page). A new room takes the lowest free zone number and the
- * default setpoint; it returns that number, 0 when the table is full or the
+/* Rooms (setup page). A new room takes the next free zone number (numbers
+ * of deleted rooms come again only after 255) and the default setpoint; it returns that number, 0 when the table is full or the
  * name is not one install_name_ok takes. Deleting a room puts its devices in
  * no room. False when there is no such room or the name is bad. */
 uint8_t gateway_add_room(struct gateway *g, const char *name);
@@ -146,8 +148,9 @@ bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone);
 struct gateway_device *gateway_device(struct gateway *g, const uint8_t eui[8]);
 struct gateway_room *gateway_room(struct gateway *g, uint8_t zone);
 
-/* An MQTT message for the gateway: tado/gateway/pair/set opens a window. */
-void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len);
+/* An MQTT message for the gateway: a message on tado/gateway/pair/set opens
+ * a window, unless it is empty or retained (an old command or its clearing). */
+void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained);
 
 /* After MQTT (re)connects: discovery and state of everything known again. */
 void gateway_announce(struct gateway *g);

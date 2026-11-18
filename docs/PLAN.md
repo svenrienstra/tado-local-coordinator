@@ -167,7 +167,7 @@ As built in M2 (`gateway/app/ha.c`): sensors only, each published (discovery,
 retained) once it has a value: per device temperature, humidity, battery (V),
 signal and last seen; per zone temperature, setpoint and heating demand,
 named after the room. `tado/gateway/pair/set` opens a pair window (any
-payload), as the setup page does (3.9). The climate entity and
+message that is not empty or retained), as the setup page does (3.9). The climate entity and
 `tado/zone/<n>/setpoint/set` come with M3.
 
 - **Discovery:** for each zone, a retained config message on

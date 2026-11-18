@@ -85,15 +85,19 @@ static bool load_identity(struct gateway_identity *id)
         /* The devices know their home by its id: a new one would orphan them. */
         halt("no home id in NVS");
     }
-    /* Rooms and devices: a bad copy loses the rooms, not the devices' key. */
+    return true;
+}
+
+/* Rooms and devices: a bad copy loses the rooms, not the devices' key. */
+static void load_install(struct install *in)
+{
     uint8_t blob[INSTALL_MAX_BLOB];
     size_t len = sizeof blob;
     esp_err_t err = nvs_get_blob(nvs, "inst", blob, &len);
-    if (err == ESP_OK && !install_decode(blob, len, &id->install))
+    if (err == ESP_OK && !install_decode(blob, len, in))
         ESP_LOGE(TAG, "the rooms in NVS are damaged: starting without rooms and devices");
     else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND)
         nvs_ok(err, "inst");
-    return true;
 }
 
 static void save_identity(const struct gateway_identity *id)
@@ -229,6 +233,7 @@ struct command {
     char topic[48];
     char payload[16];
     size_t len;
+    bool retained;
 };
 
 static QueueHandle_t commands;
@@ -259,6 +264,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         memcpy(c.topic, ev->topic, (size_t)ev->topic_len);
         memcpy(c.payload, ev->data, (size_t)ev->data_len);
         c.len = (size_t)ev->data_len;
+        c.retained = ev->retain;
         xQueueSend(commands, &c, 0);
         break;
     default:
@@ -299,7 +305,7 @@ static struct {
 
 static bool authorized(httpd_req_t *req)
 {
-    char header[160] = {0};
+    char header[256] = {0}; /* "Basic " and the base64 of web_auth_ok's longest */
     if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof header) == ESP_OK &&
         web_auth_ok(header, CONFIG_TADO_WEB_USERNAME, CONFIG_TADO_WEB_PASSWORD))
         return true;
@@ -307,6 +313,19 @@ static bool authorized(httpd_req_t *req)
     httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"tado gateway\"");
     httpd_resp_sendstr(req, "");
     return false;
+}
+
+/* The status line needs its reason phrase. */
+static const char *status_line(int status)
+{
+    switch (status) {
+    case 200: return "200 OK";
+    case 400: return "400 Bad Request";
+    case 404: return "404 Not Found";
+    case 405: return "405 Method Not Allowed";
+    case 409: return "409 Conflict";
+    default: return "500 Internal Server Error";
+    }
 }
 
 static esp_err_t on_page(httpd_req_t *req)
@@ -345,9 +364,7 @@ static esp_err_t on_api(httpd_req_t *req)
     struct command c = {.kind = COMMAND_WEB};
     xQueueSend(commands, &c, portMAX_DELAY);
     xSemaphoreTake(call.done, portMAX_DELAY);
-    char status[16];
-    snprintf(status, sizeof status, "%d", call.status);
-    httpd_resp_set_status(req, status);
+    httpd_resp_set_status(req, status_line(call.status));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, call.out);
 }
@@ -416,7 +433,7 @@ static void gateway_task(void *arg)
                 call.status = web_handle(&gw, call.method, call.path, call.body, call.len, call.out, sizeof call.out);
                 xSemaphoreGive(call.done);
             } else {
-                gateway_command(&gw, c.topic, c.payload, c.len);
+                gateway_command(&gw, c.topic, c.payload, c.len, c.retained);
             }
         }
         gateway_run(&gw, 50);
@@ -434,8 +451,11 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs));
     commands = xQueueCreate(8, sizeof(struct command));
 
-    static struct gateway_identity id;
-    if (!load_identity(&id)) {
+    struct gateway_identity id = {0};
+    static struct install install; /* off the main task's small stack */
+    if (load_identity(&id)) {
+        load_install(&install);
+    } else {
         /* The network key must be truly random: without WiFi running yet, the
          * RNG needs its entropy source switched on (esp_random.h). */
         bootloader_random_enable();
@@ -445,7 +465,7 @@ void app_main(void)
         ESP_LOGW(TAG, "new identity: home %lu; devices must be paired to it", (unsigned long)id.home_id);
     }
     ESP_LOGI(TAG, "home %lu, %u room(s), %u device(s), counter floor %lu", (unsigned long)id.home_id,
-             (unsigned)id.install.n_rooms, (unsigned)id.install.n_devices, (unsigned long)id.counter_floor);
+             (unsigned)install.n_rooms, (unsigned)install.n_devices, (unsigned long)id.counter_floor);
 
     wifi_start();
     cc1312_init();
@@ -457,7 +477,7 @@ void app_main(void)
                                            .save_channel = gw_save_channel,
                                            .save_install = gw_save_install};
     static const struct gwlink_ops link = {.write = link_write, .read = link_read, .now_ms = link_now};
-    gateway_init(&gw, &id, &ops, &link);
+    gateway_init(&gw, &id, &install, &ops, &link);
 
     mqtt_start();
     xTaskCreate(gateway_task, "gateway", 16384, NULL, 5, NULL);

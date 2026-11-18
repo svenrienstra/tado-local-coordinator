@@ -110,6 +110,11 @@ bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], u
     return true;
 }
 
+const struct session_zone *session_zone(const struct session *s, uint8_t zone)
+{
+    return zone_find((struct session *)s, zone);
+}
+
 void session_drop_zone(struct session *s, uint8_t zone)
 {
     struct session_zone *z = zone_find(s, zone);

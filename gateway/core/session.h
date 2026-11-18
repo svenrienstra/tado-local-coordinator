@@ -159,6 +159,9 @@ void session_set_home(struct session *s, uint32_t home_id, uint32_t overlay_ms);
  * False when the zone table is full. */
 bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], uint16_t setpoint);
 
+/* The zone, or NULL when it is not served. */
+const struct session_zone *session_zone(const struct session *s, uint8_t zone);
+
 /* Forgets the zone: it is no longer served. */
 void session_drop_zone(struct session *s, uint8_t zone);
 

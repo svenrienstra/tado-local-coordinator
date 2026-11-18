@@ -115,7 +115,8 @@ As in the tado app, a device is paired first and then put in a room:
 Moving a device that already took a room's config reaches it only at its
 next config read: forcing that (a config write or `d/reboot`) is M4. Progress
 also goes to `tado/gateway/log`; `tado/gateway/pair/set` opens a pair window
-too (any payload).
+too (any message that is not empty or retained). No window opens while
+the device table (16) is full.
 
 ## Tests
 
