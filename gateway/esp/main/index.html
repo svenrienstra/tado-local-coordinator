@@ -5,61 +5,139 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tado gateway</title>
 <style>
-  :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd; --accent: #2f6fdb; --warn: #b4560c; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #18181a; --card: #222226; --text: #ececea; --muted: #9a9a94; --line: #34343a; --accent: #6b9cf0; --warn: #f0a050; }
+  :root {
+    --bg: #0d1a33; --bg2: #13244a; --panel: #172a52; --panel2: #1d3361; --line: #2a4176;
+    --text: #eef2fb; --muted: #9fb0d3; --accent: #6aa8ff; --warn: #ffb35c;
+    --heat: #ffa465; --heat-ink: #4a1f00; --idle: #6fd9a0; --idle-ink: #0c3a22;
+    --none: #2a3c64; --none-ink: #c9d4ee; --shadow: 0 1px 0 rgba(255,255,255,.04) inset;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef2f8; --bg2: #e4eaf4; --panel: #ffffff; --panel2: #f3f6fb; --line: #d7dfec;
+      --text: #12203d; --muted: #5b6b8c; --accent: #2f6fdb; --warn: #b4560c;
+      --none: #e3e9f3; --none-ink: #3c4d70; --shadow: 0 1px 2px rgba(18,32,61,.06);
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
-  main { max-width: 640px; margin: 0 auto; padding: 16px; }
-  h1 { font-size: 20px; margin: 4px 0 2px; }
-  h2 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  .status { color: var(--muted); font-size: 13px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .grow { flex: 1; min-width: 0; }
-  .name { font-weight: 600; }
-  .meta { color: var(--muted); font-size: 13px; }
-  .device { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
-  .device:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-  .badge { font-size: 12px; color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; }
-  button, select, input { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  body { margin: 0; color: var(--text); font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: radial-gradient(1200px 600px at 20% -10%, var(--bg2), var(--bg)) fixed, var(--bg); min-height: 100vh; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 48px; }
+  svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 700; letter-spacing: -.01em; flex: 1; }
+  .logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--panel2); color: var(--accent); }
+  .logo svg { width: 20px; height: 20px; }
+  .brand span { color: var(--accent); }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+          border-radius: 999px; padding: 4px 10px; box-shadow: var(--shadow); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+  .dot.off { background: var(--warn); }
+
+  h2 { font-size: 17px; margin: 26px 2px 12px; font-weight: 650; }
+  h2 small { color: var(--muted); font-weight: 400; font-size: 14px; margin-left: 6px; }
+
+  .pair { display: flex; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow); }
+  .pair .icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: var(--panel2); color: var(--accent); flex: none; }
+  .pair .icon svg { width: 22px; height: 22px; }
+  .pair.live .icon { background: var(--heat); color: var(--heat-ink); }
+  .pair.done .icon { background: var(--idle); color: var(--idle-ink); }
+  .pair .text { flex: 1; min-width: 0; }
+  .pair .title { font-weight: 650; }
+  .pair .sub { color: var(--muted); font-size: 13px; }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--heat); transition: width .5s linear; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .tile { position: relative; border-radius: 18px; padding: 14px 16px 12px; display: flex; flex-direction: column; min-height: 196px;
+          background: var(--none); color: var(--none-ink); }
+  .tile.heat { background: var(--heat); color: var(--heat-ink); }
+  .tile.idle { background: var(--idle); color: var(--idle-ink); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; min-height: 24px; padding-right: 64px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 2px 8px;
+          background: rgba(0,0,0,.12); }
+  .chip svg { width: 13px; height: 13px; }
+  .tools { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; }
+  .tools button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 9px; border: 0;
+                  background: rgba(0,0,0,.10); color: inherit; cursor: pointer; }
+  .tools button:hover { background: rgba(0,0,0,.2); }
+  .temp { font-size: 52px; font-weight: 750; letter-spacing: -.03em; line-height: 1; margin: 10px 0 2px; font-variant-numeric: tabular-nums; }
+  .temp sup { font-size: 22px; vertical-align: 26px; margin-left: 1px; }
+  .temp small { font-size: 22px; font-weight: 700; margin-left: -8px; }
+  .temp.none { font-size: 34px; opacity: .55; margin-top: 18px; }
+  .room { font-size: 17px; font-weight: 700; margin-top: 4px; }
+  .state { display: flex; align-items: center; gap: 5px; font-size: 13.5px; font-weight: 550; opacity: .85; }
+  .dev { margin-top: auto; padding-top: 10px; }
+  .dev .strip { display: grid; gap: 8px; border-radius: 12px; padding: 9px 10px; background: rgba(0,0,0,.10); }
+  .dev .who { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.3; min-width: 0; }
+  .dev .who b { font-size: 13px; white-space: nowrap; }
+  .dev .who span { opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tile select { color: inherit; background: rgba(255,255,255,.35); border-color: transparent; max-width: none; padding: 5px 9px; }
+
+  .add { border: 1.5px dashed var(--line); background: transparent; color: var(--muted); align-items: stretch; justify-content: center; gap: 10px; }
+  .add .plus { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: var(--panel); color: var(--accent); }
+  .add form { display: flex; gap: 8px; }
+  .add input { flex: 1; min-width: 0; }
+
+  .devices { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .device { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; box-shadow: var(--shadow); }
+  .device .icon { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: var(--panel2); color: var(--muted); flex: none; }
+  .device .who { flex: 1; min-width: 0; }
+  .device .who b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .device .who span { color: var(--muted); font-size: 13px; }
+  .badge { white-space: nowrap; font-size: 11.5px; font-weight: 650; color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 4px 2px; }
+
+  button, select, input { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 11px; }
   button { cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .error { color: var(--warn); min-height: 1.4em; font-size: 13px; }
-  .empty { color: var(--muted); font-size: 13px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  select { max-width: 150px; }
+  .error { color: var(--warn); font-size: 13.5px; margin-top: 8px; }
+  .error:empty { display: none; }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 1.5-5 3-6.5.5 2 1.5 3 3 3.5C12 8 11 5 12 2z"/></symbol>
+  <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+</svg>
 <main>
-  <h1>tado gateway</h1>
-  <div class="status" id="status">Loading…</div>
+  <header>
+    <div class="brand"><div class="logo"><svg><use href="#i-home"/></svg></div>tado <span>gateway</span></div>
+    <div class="pills" id="status"><span class="pill">Loading…</span></div>
+  </header>
+
+  <div class="pair" id="pair-card">
+    <div class="icon"><svg id="pair-icon"><use href="#i-link"/></svg></div>
+    <div class="text">
+      <div class="title" id="pair-title">Add a device</div>
+      <div class="sub" id="pair-sub">Pair it first, then put it in a room.</div>
+      <div class="bar" id="pair-bar" hidden><i id="pair-fill"></i></div>
+    </div>
+    <button class="primary" id="pair">Add device</button>
+    <button id="pair-cancel" hidden>Cancel</button>
+  </div>
   <div class="error" id="error"></div>
 
-  <h2>Add device</h2>
-  <div class="card">
-    <div class="row">
-      <div class="grow" id="pair-text">Pair a device, then put it in a room below.</div>
-      <button class="primary" id="pair">Add device</button>
-      <button id="pair-cancel" hidden>Cancel</button>
-    </div>
-  </div>
+  <h2>Rooms <small id="rooms-count"></small></h2>
+  <div class="grid" id="rooms"></div>
 
-  <h2>Rooms</h2>
-  <div id="rooms"></div>
-  <div class="card">
-    <form class="row" id="add-room">
-      <input class="grow" id="room-name" maxlength="23" placeholder="New room name" required>
-      <button type="submit">Add room</button>
-    </form>
-  </div>
-
-  <h2>No room</h2>
-  <div id="unassigned"></div>
+  <h2>No room <small id="unassigned-count"></small></h2>
+  <div class="devices" id="unassigned"></div>
 </main>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+const PAIR_WINDOW = 120;
 let state = null;
 
 function el(tag, props, ...children) {
@@ -69,8 +147,19 @@ function el(tag, props, ...children) {
   return e;
 }
 
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+function chip(name, text) { return el("span", { className: "chip" }, icon(name), text); }
+
 async function act(path, fields) {
   $("error").textContent = "";
+  document.activeElement.blur(); /* refresh draws only while nothing is being edited */
   const body = new URLSearchParams(fields || {});
   const r = await fetch(path, { method: "POST", headers: { "X-Tado": "1" }, body }).catch((e) => e);
   if (r instanceof Error) $("error").textContent = r.message;
@@ -78,21 +167,29 @@ async function act(path, fields) {
   await refresh();
 }
 
-function seen(iso) {
+function ago(iso) {
   if (!iso) return null;
   const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
   return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 }
 
-function deviceLine(d) {
-  const s = d.state || {};
-  const facts = [
-    s.temperature != null ? `${s.temperature.toFixed(1)} °C` : null,
-    s.humidity != null ? `${s.humidity.toFixed(0)} %` : null,
-    s.battery != null ? `battery ${s.battery.toFixed(2)} V` : null,
+function deg(c) { return `${c.toFixed(1).replace(/\.0$/, "")}°`; }
+
+function bigTemp(c) {
+  if (c == null) return el("div", { className: "temp none", textContent: "–" });
+  const [whole, tenth] = c.toFixed(1).split(".");
+  return el("div", { className: "temp" }, whole, el("sup", { textContent: "°" }), el("small", { textContent: `.${tenth}` }));
+}
+
+function deviceFacts(s) {
+  return [
+    s.battery != null ? `${s.battery.toFixed(2)} V` : null,
     s.rssi != null ? `${s.rssi} dBm` : null,
-    seen(s.last_seen),
-  ].filter(Boolean);
+    ago(s.last_seen),
+  ].filter(Boolean).join(" · ") || "no report yet";
+}
+
+function roomSelect(d) {
   const move = el("select", { title: "Room" });
   move.append(el("option", { value: "0", textContent: "No room" }));
   for (const r of state.rooms) {
@@ -101,69 +198,105 @@ function deviceLine(d) {
   }
   move.value = String(d.zone);
   move.onchange = () => act(`/api/devices/${d.eui}`, { zone: move.value });
-  return el("div", { className: "device row" },
-    el("div", { className: "grow" },
-      el("div", { className: "name" }, d.serial || d.eui, " ",
-        d.waiting ? el("span", { className: "badge", textContent: "waiting for a room" }) : null),
-      el("div", { className: "meta", textContent: facts.join(" · ") || "no report yet" })),
-    move);
+  return move;
+}
+
+function roomTile(r) {
+  const s = r.state || {};
+  const d = state.devices.find((x) => x.zone === r.zone);
+  const ds = (d && d.state) || {};
+  const heating = s.demand > 0;
+  const tile = el("div", { className: `tile ${!d ? "" : heating ? "heat" : s.temperature != null ? "idle" : ""}` });
+
+  const chips = el("div", { className: "chips" });
+  if (ds.humidity != null) chips.append(chip("drop", `${ds.humidity.toFixed(0)}%`));
+  if (heating) chips.append(chip("flame", `${s.demand}%`));
+  if (d && d.waiting) chips.append(chip("clock", "taking the room"));
+  tile.append(chips);
+
+  const rename = el("button", { title: "Rename" }, icon("edit"));
+  rename.onclick = () => {
+    const name = prompt("Room name", r.name);
+    if (name && name !== r.name) act(`/api/rooms/${r.zone}`, { name });
+  };
+  const del = el("button", { title: "Delete" }, icon("trash"));
+  del.onclick = () => { if (confirm(`Delete ${r.name}?${d ? " Its device goes to No room." : ""}`)) act(`/api/rooms/${r.zone}/delete`); };
+  tile.append(el("div", { className: "tools" }, rename, del));
+
+  tile.append(bigTemp(d ? s.temperature : null));
+  tile.append(el("div", { className: "room", textContent: r.name }));
+  const line = !d ? [icon("plus"), "No device yet"]
+    : heating ? [icon("flame"), s.setpoint != null ? `Heating to ${deg(s.setpoint)}` : "Heating"]
+    : s.temperature != null ? [icon("check"), s.setpoint != null ? `Idle · ${deg(s.setpoint)}` : "Idle"]
+    : [icon("clock"), "Waiting for its first report"];
+  tile.append(el("div", { className: "state" }, ...line));
+
+  if (d) {
+    tile.append(el("div", { className: "dev" },
+      el("div", { className: "strip" },
+        el("div", { className: "who" }, el("b", { textContent: d.serial || d.eui }), el("span", { textContent: deviceFacts(ds) })),
+        roomSelect(d))));
+  }
+  return tile;
+}
+
+function addRoomTile() {
+  const input = el("input", { placeholder: "Room name", maxLength: 23, required: true });
+  const form = el("form", {}, input, el("button", { type: "submit", textContent: "Add" }));
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (name) act("/api/rooms", { name });
+  };
+  return el("div", { className: "tile add" },
+    el("div", { className: "plus" }, icon("plus")),
+    el("div", { className: "room", textContent: "Add a room" }),
+    form);
+}
+
+function deviceCard(d) {
+  return el("div", { className: "device" },
+    el("div", { className: "icon" }, icon("chip")),
+    el("div", { className: "who" },
+      el("b", {}, d.serial || d.eui, d.waiting ? el("span", { className: "badge", textContent: "waiting for a room" }) : null),
+      el("span", { textContent: deviceFacts(d.state || {}) })),
+    roomSelect(d));
 }
 
 function render() {
-  const p = state.pair;
-  $("status").textContent = [
-    state.cc1312 ? "radio ready" : "radio not ready",
-    state.clock ? "clock set" : "clock not set yet",
-    `home ${state.home}`,
-  ].join(" · ");
+  const pill = (ok, yes, no) => el("span", { className: "pill" }, el("i", { className: ok ? "dot" : "dot off" }), ok ? yes : no);
+  $("status").replaceChildren(
+    pill(state.cc1312, "Radio ready", "Radio not ready"),
+    pill(state.clock, "Clock set", "Clock not set"),
+    el("span", { className: "pill", textContent: `Home ${state.home}` }));
 
+  const p = state.pair;
   const texts = {
-    idle: "Pair a device, then put it in a room below.",
-    open: `Long-press the device's button now (${p.left} s left).`,
-    joining: "A device is joining…",
-    joined: `Device ${p.joined} joined. Put it in a room below.`,
-    failed: "The device did not take our key. Reset it and try again.",
-    closed: "No device joined. Try again?",
+    idle: ["Add a device", "Pair it first, then put it in a room."],
+    open: ["Long-press the device's button", `The pair window closes in ${p.left} s.`],
+    joining: ["A device is joining…", "Sending it our network key."],
+    joined: ["Device joined", `${p.joined} is under No room: put it in a room.`],
+    failed: ["Pairing failed", "The device did not take our key. Reset it and try again."],
+    closed: ["No device joined", "Try again, and long-press within two minutes."],
   };
-  $("pair-text").textContent = texts[p.state] || p.state;
-  const busy = p.state === "open" || p.state === "joining";
-  $("pair").hidden = busy;
+  const [title, sub] = texts[p.state] || [p.state, ""];
+  const live = p.state === "open" || p.state === "joining";
+  $("pair-card").className = `pair${live ? " live" : p.state === "joined" ? " done" : ""}`;
+  $("pair-title").textContent = title;
+  $("pair-sub").textContent = sub;
+  $("pair-bar").hidden = p.state !== "open";
+  $("pair-fill").style.width = `${Math.min(100, (p.left / PAIR_WINDOW) * 100)}%`;
+  $("pair-icon").firstElementChild.setAttribute("href", p.state === "joined" ? "#i-check" : "#i-link");
+  $("pair").hidden = live;
   $("pair-cancel").hidden = p.state !== "open";
 
-  const rooms = $("rooms");
-  rooms.replaceChildren();
-  if (!state.rooms.length) rooms.append(el("div", { className: "empty card", textContent: "No rooms yet." }));
-  for (const r of state.rooms) {
-    const s = r.state || {};
-    const facts = [
-      s.temperature != null ? `${s.temperature.toFixed(1)} °C` : null,
-      s.setpoint != null ? `set to ${s.setpoint.toFixed(1)} °C` : null,
-      s.demand != null ? `heating ${s.demand} %` : null,
-    ].filter(Boolean);
-    const rename = el("button", { textContent: "Rename" });
-    rename.onclick = () => {
-      const name = prompt("Room name", r.name);
-      if (name && name !== r.name) act(`/api/rooms/${r.zone}`, { name });
-    };
-    const del = el("button", { textContent: "Delete" });
-    del.onclick = () => { if (confirm(`Delete ${r.name}? Its device goes to No room.`)) act(`/api/rooms/${r.zone}/delete`); };
-    const card = el("div", { className: "card" },
-      el("div", { className: "row" },
-        el("div", { className: "grow" },
-          el("div", { className: "name", textContent: r.name }),
-          el("div", { className: "meta", textContent: facts.join(" · ") || `zone ${r.zone}` })),
-        rename, del));
-    const devices = state.devices.filter((d) => d.zone === r.zone);
-    if (!devices.length) card.append(el("div", { className: "device meta", textContent: "No device in this room." }));
-    for (const d of devices) card.append(deviceLine(d));
-    rooms.append(card);
-  }
+  $("rooms-count").textContent = state.rooms.length ? `${state.rooms.length}` : "";
+  $("rooms").replaceChildren(...state.rooms.map(roomTile), addRoomTile());
 
-  const unassigned = $("unassigned");
-  unassigned.replaceChildren();
   const none = state.devices.filter((d) => !state.rooms.some((r) => r.zone === d.zone));
-  if (!none.length) unassigned.append(el("div", { className: "empty card", textContent: "Every device has a room." }));
-  else unassigned.append(el("div", { className: "card" }, ...none.map(deviceLine)));
+  $("unassigned-count").textContent = none.length ? `${none.length}` : "";
+  $("unassigned").replaceChildren(...(none.length ? none.map(deviceCard)
+    : [el("div", { className: "empty", textContent: "Every device has a room." })]));
 }
 
 async function refresh() {
@@ -171,22 +304,18 @@ async function refresh() {
     const r = await fetch("/api/state");
     if (!r.ok) throw new Error(r.statusText);
     state = await r.json();
-    render();
+    /* Not while a room menu is open or a name is being typed. */
+    if (!document.querySelector("select:focus, input:focus")) render();
   } catch (e) {
-    $("status").textContent = `Gateway not reachable (${e.message})`;
+    $("status").replaceChildren(el("span", { className: "pill" }, el("i", { className: "dot off" }), `Gateway not reachable (${e.message})`));
   }
 }
 
 $("pair").onclick = () => act("/api/pair");
 $("pair-cancel").onclick = () => act("/api/pair/close");
-$("add-room").onsubmit = (e) => {
-  e.preventDefault();
-  const name = $("room-name").value.trim();
-  if (name) act("/api/rooms", { name }).then(() => { $("room-name").value = ""; });
-};
 refresh();
 /* Not while the tab is hidden: each poll is work on the gateway's task. */
-setInterval(() => { if (!document.hidden && !document.querySelector("select:focus")) refresh(); }, 2000);
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>
