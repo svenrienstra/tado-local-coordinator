@@ -8,21 +8,6 @@
 const uint8_t PAIRING_KEY[16] = {'t', 'a', 'd', 'o', ' ', 'p', 'a', 'i',
                                  'r', 'i', 'n', 'g', ' ', 'k', 'e', 'y'};
 
-/* TX flags (docs/HOSTLINK.md). */
-#define TXF_PAIRING_KEY 0x01
-#define TXF_BROADCAST   0x02
-#define TXF_PENDING     0x04
-#define TXF_TRAIN_SHIFT 4
-#define TXF_TRAIN_MASK  0x30
-#define TRAIN_NONE      0
-#define TRAIN_FULL      1
-#define TRAIN_ANCHORED  2 /* short train on the device's sample; full when unknown */
-
-/* RX event flags. */
-#define RXF_PAIRING_KEY 0x01
-#define RXF_BROADCAST   0x02
-#define RXF_ACKED       0x04
-
 static bool before(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
 
 /* Whether less than interval ms passed since stamp. Unlike before() on
@@ -104,11 +89,11 @@ static uint64_t anchor_guard(const struct anchor *a, uint64_t sample)
  * train can still start JOB_LEAD_RAT from now, else a full one at once. */
 static void schedule_job(struct coordinator *c, struct tx_job *j, uint64_t now)
 {
-    struct anchor *a = j->unicast && j->train == TRAIN_ANCHORED ? anchor_find(c, j->dst_short) : NULL;
+    struct anchor *a = j->unicast && j->train == HL_TRAIN_ANCHORED ? anchor_find(c, j->dst_short) : NULL;
     j->scheduled = true;
     j->anchored = a != NULL && a->misses == 0;
     if (!j->anchored) {
-        j->wake_frames = j->train == TRAIN_NONE ? 0 : MAC_TRAIN_FULL;
+        j->wake_frames = j->train == HL_TRAIN_NONE ? 0 : MAC_TRAIN_FULL;
         return; /* starts when handed to the radio */
     }
     uint64_t step = WAKE_STEP_RAT;
@@ -258,18 +243,18 @@ static enum hl_status do_tx(struct coordinator *c, const uint8_t *p, size_t len,
     if (len < 1 + 8 + 1)
         return HL_BAD_ARG;
     uint8_t flags = p[0];
-    unsigned train = (flags & TXF_TRAIN_MASK) >> TXF_TRAIN_SHIFT;
-    if (train > TRAIN_ANCHORED)
+    unsigned train = (flags & HL_TXF_TRAIN_MASK) >> HL_TXF_TRAIN_SHIFT;
+    if (train > HL_TRAIN_ANCHORED)
         return HL_BAD_ARG;
     if (c->queue_len == TX_QUEUE_LEN)
         return HL_BUSY;
 
-    const uint8_t *key = (flags & TXF_PAIRING_KEY) ? PAIRING_KEY : c->network_key;
-    bool pending = (flags & TXF_PENDING) != 0;
+    const uint8_t *key = (flags & HL_TXF_PAIRING_KEY) ? PAIRING_KEY : c->network_key;
+    bool pending = (flags & HL_TXF_PENDING) != 0;
     const uint8_t *dst = &p[1], *packet = &p[9];
     size_t packet_len = len - 9;
     struct tx_job *job = &c->queue[c->queue_len];
-    job->unicast = !(flags & TXF_BROADCAST);
+    job->unicast = !(flags & HL_TXF_BROADCAST);
     job->seq = c->seq;
     job->len = job->unicast
                    ? mac_seal_unicast(job->frame, key, pending, c->seq, dst, c->eui, c->counter,
@@ -309,8 +294,8 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     v[7] = c->stats.jobs_failed;
     v[8] = c->stats.jobs_timed_out;
     v[9] = c->stats.radio_errors;
-    v[10] = c->link.crc_errors;
-    v[11] = c->link.resyncs;
+    v[10] = c->link.rx.stats.crc_errors;
+    v[11] = c->link.rx.stats.resyncs;
     v[12] = c->stats.acks_late;
     v[13] = c->stats.jobs_anchored;
     v[14] = c->stats.rx_duplicates;
@@ -602,7 +587,7 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
     uint8_t ack_seq, ack_dst[8];
     if (mac_ack_request(frame, len, c->eui, &ack_seq, ack_dst) &&
         send_ack(c, ack_seq, ack_dst, rat_end))
-        flags |= RXF_ACKED;
+        flags |= HL_RXF_ACKED;
 
     /* A joiner talks the pairing key until d/pair; only an open window lets
      * that key in. */
@@ -610,19 +595,19 @@ static void receive_data(struct coordinator *c, enum mac_kind kind, const uint8_
     bool ok = to_us && mac_open_data(frame, len, c->network_key, scratch, &d);
     if (to_us && !ok && pair_window_open(c)) {
         ok = mac_open_data(frame, len, PAIRING_KEY, scratch, &d);
-        flags |= RXF_PAIRING_KEY;
+        flags |= HL_RXF_PAIRING_KEY;
     }
     if (!ok) {
         report_unverified(c, frame, len, rssi, rat_end);
         return;
     }
-    if (!(flags & RXF_PAIRING_KEY)) {
+    if (!(flags & HL_RXF_PAIRING_KEY)) {
         uint8_t short_addr[2];
         mac_short_addr(d.src, short_addr);
         tune_note(c, short_addr, freq_offset);
     }
     if (d.broadcast)
-        flags |= RXF_BROADCAST;
+        flags |= HL_RXF_BROADCAST;
     else if (repeated_unicast(c, &d)) {
         c->stats.rx_duplicates++;
         return;

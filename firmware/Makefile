@@ -25,7 +25,7 @@ DSLITE ?= $(firstword $(wildcard \
   /Applications/ti/uniflash_*/deskdb/content/TICloudAgent/osx/ccs_base/DebugServer/bin/DSLite))
 
 BUILD := build
-CORE  := src/crc.c src/ccm.c src/mac.c src/hostlink.c src/coordinator.c
+CORE  := src/crc.c src/ccm.c src/mac.c src/hlframe.c src/hostlink.c src/coordinator.c
 
 # --- host tests --------------------------------------------------------------
 

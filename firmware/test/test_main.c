@@ -319,7 +319,7 @@ static void test_hostlink(void)
     struct hostlink hl;
     uint8_t req[HL_MAX_FRAME], first_reply[HL_MAX_FRAME];
     static const uint8_t payload[3] = {0xaa, 0xbb, 0xcc};
-    size_t n = hostlink_encode(req, 7, 0x42, payload, sizeof payload);
+    size_t n = hl_frame_encode(req, 7, 0x42, payload, sizeof payload);
     size_t len;
     const uint8_t *p;
 
@@ -347,7 +347,7 @@ static void test_hostlink(void)
     reset_stubs();
     static const uint8_t other[3] = {0x11, 0x22, 0x33};
     uint8_t req2[HL_MAX_FRAME];
-    size_t n2 = hostlink_encode(req2, 7, 0x42, other, sizeof other);
+    size_t n2 = hl_frame_encode(req2, 7, 0x42, other, sizeof other);
     hostlink_feed(&hl, req2, n2);
     p = host_frame(0x42 | HL_REPLY_FLAG, 0, &len);
     CHECK(handler_calls == 2 && p && len == 5 && memcmp(&p[2], other, 3) == 0);
@@ -355,14 +355,23 @@ static void test_hostlink(void)
     /* A corrupted frame is dropped; the next good one, fed byte by byte, runs. */
     reset_stubs();
     uint8_t bad[HL_MAX_FRAME];
-    size_t bn = hostlink_encode(bad, 8, 0x42, payload, sizeof payload);
+    size_t bn = hl_frame_encode(bad, 8, 0x42, payload, sizeof payload);
     bad[7] ^= 0x01;
     hostlink_feed(&hl, bad, bn);
     CHECK(handler_calls == 2 && host_out_len == 0);
-    n = hostlink_encode(req, 9, 0x43, payload, 1);
+    n = hl_frame_encode(req, 9, 0x43, payload, 1);
     for (size_t i = 0; i < n; i++)
         hostlink_feed(&hl, &req[i], 1);
     CHECK(handler_calls == 3 && host_frame(0x43 | HL_REPLY_FLAG, 0, &len) != NULL);
+
+    /* A torn start claiming a long body (a reset mid-frame) does not hold back
+     * the whole, valid request behind it. */
+    reset_stubs();
+    static const uint8_t torn[] = {0x7e, 0xa5, 0x2c, 0x01};
+    hostlink_feed(&hl, torn, sizeof torn);
+    n = hl_frame_encode(req, 10, 0x44, payload, 1);
+    hostlink_feed(&hl, req, n);
+    CHECK(handler_calls == 4 && host_frame(0x44 | HL_REPLY_FLAG, 0, &len) != NULL);
 }
 
 /* --- coordinator -------------------------------------------------------- */
@@ -371,7 +380,7 @@ static void host_request(struct coordinator *c, uint8_t seq, uint8_t type, const
                          size_t len)
 {
     uint8_t f[HL_MAX_FRAME];
-    size_t n = hostlink_encode(f, seq, type, p, len);
+    size_t n = hl_frame_encode(f, seq, type, p, len);
     coord_on_host_bytes(c, f, n);
 }
 
@@ -988,7 +997,7 @@ static void test_stats_and_log(void)
     static const uint8_t noise[] = {0x00, 0x7e, 0x13, 0x7e, 0xa5, 0xff, 0xff};
     coord_on_host_bytes(&c, noise, sizeof noise);
     uint8_t bad[HL_MAX_FRAME];
-    size_t bn = hostlink_encode(bad, 2, HL_PING, NULL, 0);
+    size_t bn = hl_frame_encode(bad, 2, HL_PING, NULL, 0);
     bad[bn - 1] ^= 1;
     coord_on_host_bytes(&c, bad, bn);
     CHECK(stat(&c, S_LINK_CRC) == 1 && stat(&c, S_LINK_RESYNCS) == sizeof noise + bn);

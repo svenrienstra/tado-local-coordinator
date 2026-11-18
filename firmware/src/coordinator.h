@@ -14,21 +14,6 @@
 
 #define FW_VERSION 0x0002
 
-/* Host link message types (docs/HOSTLINK.md). */
-enum {
-    HL_PING = 0x01,
-    HL_CONFIG = 0x02,
-    HL_PAIR_WINDOW = 0x03,
-    HL_TX = 0x04,
-    HL_STATS = 0x05,
-    HL_EV_LOG = 0xC0,
-    HL_EV_RX = 0xC1,
-    HL_EV_BEACON_ANSWERED = 0xC2,
-    HL_EV_RX_UNVERIFIED = 0xC3,
-    HL_EV_TX_DONE = 0xC4,
-};
-
-enum tx_result { TX_ACKED = 0, TX_SENT = 1, TX_NO_ACK = 2, TX_RADIO_ERROR = 3 };
 
 /* Platform hooks. RAT = 4 MHz radio timer. */
 uint32_t platform_ms(void);
@@ -128,7 +113,7 @@ struct tx_job {
     bool unicast;
     uint8_t seq;
     uint8_t dst_short[2];
-    uint8_t train;        /* TRAIN_NONE, _FULL or _ANCHORED, as the host asked */
+    uint8_t train;        /* HL_TRAIN_NONE, _FULL or _ANCHORED, as the host asked */
     bool scheduled;       /* wake_frames, start and anchored are set */
     bool anchored;        /* goes behind a short train on the device's sample */
     uint16_t wake_frames;
