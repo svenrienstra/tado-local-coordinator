@@ -14,6 +14,8 @@
  *   POST /api/pair/close
  *   POST /api/rooms                   name=<name>: a new room
  *   POST /api/home                    away=1|0: the whole home away or home
+ *   POST /api/settings                stale_minutes=<n>: a room unconfirmed this
+ *                                     long shows as unavailable (0: never)
  *   POST /api/rooms/<zone>            name=<name>: renames it;
  *                                     setpoint=<C>: sets its setpoint;
  *                                     away_setpoint=<C>|off: in away;

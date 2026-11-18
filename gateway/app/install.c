@@ -29,6 +29,8 @@ size_t install_encode(const struct install *in, uint8_t *out, size_t cap)
     PUT(INSTALL_VERSION);
     PUT(in->away ? 1 : 0);
     PUT(in->next_zone);
+    PUT(in->stale_minutes);
+    PUT(in->stale_minutes >> 8);
     PUT(in->n_rooms);
     for (size_t i = 0; i < in->n_rooms; i++) {
         const struct install_room *r = &in->rooms[i];
@@ -72,12 +74,14 @@ static bool take_string(const uint8_t *blob, size_t len, size_t *at, char *out, 
 
 static bool decode(const uint8_t *blob, size_t len, struct install *in)
 {
-    size_t at = 4;
-    if (len < 4 || blob[0] != INSTALL_VERSION || blob[1] > 1 || blob[3] > INSTALL_MAX_ROOMS)
+    size_t at = 6;
+    if (len < 6 || blob[0] != INSTALL_VERSION || blob[1] > 1 || get16(&blob[3]) > INSTALL_STALE_MINUTES_MAX ||
+        blob[5] > INSTALL_MAX_ROOMS)
         return false;
     in->away = blob[1] & 1;
     in->next_zone = blob[2];
-    in->n_rooms = blob[3];
+    in->stale_minutes = get16(&blob[3]);
+    in->n_rooms = blob[5];
     for (size_t i = 0; i < in->n_rooms; i++) {
         struct install_room *r = &in->rooms[i];
         if (len - at < 5)
@@ -107,11 +111,17 @@ static bool decode(const uint8_t *blob, size_t len, struct install *in)
     return at == len;
 }
 
+void install_empty(struct install *in)
+{
+    memset(in, 0, sizeof *in);
+    in->stale_minutes = INSTALL_STALE_MINUTES_DEFAULT;
+}
+
 bool install_decode(const uint8_t *blob, size_t len, struct install *in)
 {
     memset(in, 0, sizeof *in);
     if (decode(blob, len, in))
         return true;
-    memset(in, 0, sizeof *in);
+    install_empty(in);
     return false;
 }

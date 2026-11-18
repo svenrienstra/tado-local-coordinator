@@ -11,7 +11,7 @@
  * to us, each in a room or in none (docs/PLAN.md 3.8, 3.9).
  *
  * Encoded as version 1, little-endian:
- *   01 | flags (bit 0: away) | next_zone | n_rooms |
+ *   01 | flags (bit 0: away) | next_zone | stale_minutes u16 | n_rooms |
  *   (zone, setpoint u16, away_setpoint u16, name_len, name)... |
  *   n_devices | (eui[8], zone, serial_len, serial)...
  * A room's zone is 1-255, a device's 0 when it is in no room. */
@@ -21,8 +21,11 @@
 #define INSTALL_NAME_MAX    23 /* bytes of UTF-8 */
 #define INSTALL_SERIAL_MAX  15
 #define INSTALL_VERSION     1
+/* After how long unconfirmed a room shows as unavailable (gateway.h). */
+#define INSTALL_STALE_MINUTES_DEFAULT 30
+#define INSTALL_STALE_MINUTES_MAX     1440
 #define INSTALL_MAX_BLOB \
-    (5 + INSTALL_MAX_ROOMS * (6 + INSTALL_NAME_MAX) + INSTALL_MAX_DEVICES * (10 + INSTALL_SERIAL_MAX))
+    (7 + INSTALL_MAX_ROOMS * (6 + INSTALL_NAME_MAX) + INSTALL_MAX_DEVICES * (10 + INSTALL_SERIAL_MAX))
 
 struct install_room {
     uint8_t zone;
@@ -40,6 +43,7 @@ struct install_device {
 struct install {
     bool away;          /* the whole home */
     uint8_t next_zone; /* where a new room's number is looked for (gateway.h) */
+    uint16_t stale_minutes; /* 0: never */
     size_t n_rooms;
     struct install_room rooms[INSTALL_MAX_ROOMS];
     size_t n_devices;
@@ -53,7 +57,11 @@ bool install_name_ok(const char *name, size_t len);
 /* Returns the length, 0 when it does not fit cap. */
 size_t install_encode(const struct install *in, uint8_t *out, size_t cap);
 
-/* False, with *in emptied, for anything but a whole version 1 blob. */
+/* No rooms and no devices, and the default settings: before the first save. */
+void install_empty(struct install *in);
+
+/* False, with *in emptied (install_empty), for anything but a whole version 1
+ * blob. */
 bool install_decode(const uint8_t *blob, size_t len, struct install *in);
 
 #endif

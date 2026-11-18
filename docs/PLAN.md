@@ -188,7 +188,11 @@ old command again at every reconnect, or its clearing.
   temperature or boost), which the climate entity shows so its slider stays
   where it was set; `confirmed` says whether the device took it (no write
   pending and its report agrees). The climate entity carries `confirmed` and
-  `reported_setpoint` as attributes (decided 2026-11-18).
+  `reported_setpoint` as attributes (decided 2026-11-18). A room whose device has not
+  confirmed for a set time (setup page, default 30 min, 0: never) gets
+  `"stale": true` and its climate entity goes unavailable; a missed write
+  normally heals within about 20 minutes, when the device reads its zone
+  state again and gets the gateway's.
 - **Device state (retained):** `tado/device/<serial>/state`, e.g.
   `{"temperature": 20.9, "battery": "ok", "rssi": -71, "last_seen": "…"}`.
 - **Commands (not retained):** `tado/zone/<n>/setpoint/set` with a number in °C.

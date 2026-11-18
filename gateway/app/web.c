@@ -57,9 +57,9 @@ static const char *pair_state(enum gateway_pair_state s)
 static void put_state(struct gateway *g, struct out *o)
 {
     char e[17];
-    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"away\":%s,\"setpoint_min\":%u,\"setpoint_max\":%u,",
+    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"away\":%s,\"stale_minutes\":%u,\"setpoint_min\":%u,\"setpoint_max\":%u,",
         g->configured ? "true" : "false", g->ops.unix_time(g->ops.ctx) ? "true" : "false",
-        (unsigned long)g->id.home_id, g->away ? "true" : "false", HA_SETPOINT_MIN, HA_SETPOINT_MAX);
+        (unsigned long)g->id.home_id, g->away ? "true" : "false", g->stale_minutes, HA_SETPOINT_MIN, HA_SETPOINT_MAX);
     put(o, "\"pair\":{\"state\":\"%s\",\"left\":%lu", pair_state(g->pair), (unsigned long)gateway_pair_left(g));
     if (g->pair == GATEWAY_PAIR_JOINED)
         put(o, ",\"joined\":\"%s\"", eui_str(g->pair_joined, e));
@@ -235,6 +235,19 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
     }
     if (strcmp(path, "/api/pair/close") == 0) {
         gateway_close_pair(g);
+        return ok(&o);
+    }
+    if (strcmp(path, "/api/settings") == 0) {
+        char value[8];
+        int32_t minutes = -1;
+        if (web_form(body, body_len, "stale_minutes", value, sizeof value) == WEB_FIELD_OK && value[0] >= '0' &&
+            value[0] <= '9')
+            minutes = (int32_t)strtol(value, NULL, 10);
+        if (minutes < 0 || !gateway_set_stale_minutes(g, (uint16_t)minutes)) {
+            char error[48];
+            snprintf(error, sizeof error, "stale_minutes: 0-%u", INSTALL_STALE_MINUTES_MAX);
+            return answer(&o, 400, error);
+        }
         return ok(&o);
     }
     if (strcmp(path, "/api/home") == 0) {

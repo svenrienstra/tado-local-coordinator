@@ -79,6 +79,7 @@
   .dev .who { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.3; min-width: 0; }
   .dev .who b { font-size: 13px; white-space: nowrap; }
   .dev .who span { opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .setting input { width: 84px; }
   .setpoint { display: inline-flex; align-items: center; gap: 2px; margin-top: 8px; border-radius: 999px; background: rgba(0,0,0,.10); align-self: flex-start; }
   .setpoint button { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 18px; line-height: 1; }
   .setpoint button:hover { background: rgba(0,0,0,.12); }
@@ -150,6 +151,16 @@
 
   <h2>No room <small id="unassigned-count"></small></h2>
   <div class="devices" id="unassigned"></div>
+
+  <h2>Settings</h2>
+  <form class="device setting" id="settings">
+    <div class="who">
+      <b>Unavailable when unconfirmed</b>
+      <span>A room whose device has not confirmed a change for this many minutes shows as unavailable in Home Assistant. 0: never.</span>
+    </div>
+    <input id="stale-minutes" type="number" min="0" max="1440" step="1" required>
+    <button type="submit">Save</button>
+  </form>
 </main>
 <script>
 "use strict";
@@ -232,7 +243,8 @@ function roomTile(r) {
   if (heating) chips.append(chip("flame", `${s.demand}%`));
   if (d && d.waiting) chips.append(chip("clock", "taking the room"));
   if (r.boost_left > 0) chips.append(chip("bolt", `boost ${Math.ceil(r.boost_left / 60)} min`));
-  if (d && s.confirmed === false) chips.append(chip("clock", "device not confirmed yet"));
+  if (d && s.stale) chips.append(chip("clock", `unconfirmed ${state.stale_minutes}+ min`));
+  else if (d && s.confirmed === false) chips.append(chip("clock", "device not confirmed yet"));
   if (state.away) chips.append(chip("moon", r.away_setpoint ? `away ${deg(r.away_setpoint / 100)}` : "off while away"));
 
   const rename = el("button", { title: "Rename" }, icon("edit"));
@@ -352,6 +364,7 @@ function render() {
   $("rooms").replaceChildren(...state.rooms.map(roomTile), addRoomTile());
 
   const none = state.devices.filter((d) => !state.rooms.some((r) => r.zone === d.zone));
+  $("stale-minutes").value = state.stale_minutes;
   $("unassigned-count").textContent = none.length ? `${none.length}` : "";
   $("unassigned").replaceChildren(...(none.length ? none.map(deviceCard)
     : [el("div", { className: "empty", textContent: "Every device has a room." })]));
@@ -371,6 +384,7 @@ async function refresh() {
 
 $("pair").onclick = () => act("/api/pair");
 $("at-home").onclick = () => act("/api/home", { away: "0" });
+$("settings").onsubmit = (e) => { e.preventDefault(); act("/api/settings", { stale_minutes: $("stale-minutes").value }); };
 $("away").onclick = () => act("/api/home", { away: "1" });
 $("pair-cancel").onclick = () => act("/api/pair/close");
 refresh();

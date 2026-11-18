@@ -160,7 +160,7 @@ static struct install inst;
 /* Our identity, and no rooms or devices. */
 static struct gateway_identity identity(uint32_t floor)
 {
-    memset(&inst, 0, sizeof inst);
+    install_empty(&inst);
     struct gateway_identity id = {.counter_floor = floor, .channel_khz = GATEWAY_CHANNEL_KHZ, .home_id = 4242};
     memcpy(id.coordinator, coordinator(), 8);
     memcpy(id.network_key, network_key(), 16);
@@ -852,6 +852,53 @@ static void a_boost_from_home_assistant(void)
     CHECK(web("POST", "/api/rooms/11", "boost=0", out, sizeof out) == 409); /* none runs */
 }
 
+/* A device that does not confirm its target: unavailable in Home Assistant
+ * after the stale time, available again once it confirms. Configurable, off
+ * with 0, and never for a room without a device. */
+static void a_room_whose_device_does_not_confirm_goes_unavailable(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    start(&id);
+    run(3);
+    CHECK(gw.stale_minutes == INSTALL_STALE_MINUTES_DEFAULT);
+    static char out[4096];
+    CHECK(web("POST", "/api/settings", "stale_minutes=2", out, sizeof out) == 200);
+    CHECK(web("POST", "/api/settings", "stale_minutes=99999", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/settings", "stale_minutes=", out, sizeof out) == 400);
+    uint8_t empty = gateway_add_room(&gw, "Empty"); /* no device: never stale */
+
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "21", 2, false);
+    run(100); /* the write goes, unanswered */
+    CHECK(!strstr(last_on("tado/zone/11/state"), "stale"));
+    for (int i = 0; i < 2 * 6000 + 10; i++)
+        run(1); /* two minutes */
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"confirmed\":false,\"stale\":true"));
+    char topic[32];
+    snprintf(topic, sizeof topic, "tado/zone/%u/state", empty);
+    CHECK(!strstr(last_on(topic), "stale"));
+
+    /* The device takes it after all: its echo, as at its periodic read. */
+    uint8_t echo[64];
+    size_t en = tado_zone_state(echo, sizeof echo, 2100, -1);
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3601, .payload = echo, .payload_len = en};
+    coap_add_path(&put, "z/s");
+    gw.session.zones[0].writing = false; /* its ACKs were lost: the gateway gave up */
+    device_sends_coap(&put, 0x74, 0x3200);
+    run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"target\":21.00,\"confirmed\":true") &&
+          !strstr(last_on("tado/zone/11/state"), "stale"));
+
+    /* 0: never. */
+    CHECK(web("POST", "/api/settings", "stale_minutes=0", out, sizeof out) == 200);
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "22", 2, false);
+    for (int i = 0; i < 3 * 6000; i++)
+        run(1);
+    CHECK(!strstr(last_on("tado/zone/11/state"), "stale"));
+    run_past_save();
+    CHECK(saved.stale_minutes == 0);
+    CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, "\"stale_minutes\":0"));
+}
+
 /* A window that ends while d/pair is out does not cut the join short, and a
  * second window does not take it over. */
 static void a_join_under_way_outlasts_its_window(void)
@@ -935,6 +982,7 @@ void run_gateway_tests(void)
     the_same_setpoint_again_only_ends_an_overlay();
     the_home_goes_away_and_comes_back();
     a_boost_from_home_assistant();
+    a_room_whose_device_does_not_confirm_goes_unavailable();
     a_join_under_way_outlasts_its_window();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();

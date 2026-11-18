@@ -206,6 +206,8 @@ size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z, const s
         if (target->on)
             put_fixed(&o, "target", target->setpoint, 2);
         put(&o, "%s\"confirmed\":%s", o.len > 1 ? "," : "", target->confirmed ? "true" : "false");
+        if (target->stale)
+            put(&o, ",\"stale\":true");
     }
     put(&o, "}");
     return done(&o);
@@ -264,7 +266,12 @@ static void put_climate(struct out *o, unsigned zone, const char *uid, const cha
            "\"{{ 'boost' if value_json.boost | default(false) else 'none' }}\",");
     put(o, "\"min_temp\":%u,\"max_temp\":%u,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\",",
         HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
-    put(o, "\"availability_topic\":\"" HA_STATUS_TOPIC "\",\"device\":%s}", device);
+    /* Unavailable while the gateway is offline, or while the device has not
+     * confirmed its target for longer than the stale time. */
+    put(o, "\"availability\":[{\"topic\":\"" HA_STATUS_TOPIC "\"},{\"topic\":\"tado/zone/%u/state\","
+           "\"value_template\":\"{{ 'offline' if value_json.stale | default(false) else 'online' }}\"}],"
+           "\"availability_mode\":\"all\",\"device\":%s}",
+        zone, device);
 }
 
 bool ha_away_discovery(char *topic, size_t tcap, char *payload, size_t pcap)

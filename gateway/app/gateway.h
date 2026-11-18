@@ -92,6 +92,7 @@ struct gateway {
     uint8_t refused[8];       /* the last device the full table turned away */
     uint8_t next_zone;        /* where a new room's number is looked for */
     bool away;                /* the whole home */
+    uint16_t stale_minutes;   /* a room unconfirmed this long shows as unavailable; 0: never */
     bool save_pending;        /* setpoints changed and not yet saved */
     uint32_t save_due_ms;
 
@@ -114,6 +115,8 @@ struct gateway {
         char name[INSTALL_NAME_MAX + 1];
         struct tado_report r; /* its owner's reports */
         struct ha_target target; /* as last published */
+        bool unconfirmed;     /* since unconfirmed_ms its device has not confirmed its target */
+        uint32_t unconfirmed_ms;
         uint32_t discovered;
     } rooms[INSTALL_MAX_ROOMS];
     char topic[96], payload[1536]; /* publishing scratch; a climate config is about 1.3 KB */
@@ -167,6 +170,11 @@ bool gateway_set_away_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
 /* Starts the room's boost (GATEWAY_BOOST_SETPOINT for GATEWAY_BOOST_MS), or
  * ends it. False when the room has no device, or no boost runs to end. */
 bool gateway_boost(struct gateway *g, uint8_t zone, bool on);
+
+/* After how many minutes a room whose device has not confirmed its target
+ * shows as unavailable in Home Assistant (0: never, at most
+ * INSTALL_STALE_MINUTES_MAX). False when out of range. */
+bool gateway_set_stale_minutes(struct gateway *g, uint16_t minutes);
 
 /* Seconds the room's boost has left, 0 when none runs. */
 uint32_t gateway_boost_left(struct gateway *g, uint8_t zone);

@@ -111,7 +111,9 @@ static void a_room_is_a_climate_entity(void)
                  "\"preset_mode_state_topic\":\"~/state\","
                  "\"preset_mode_value_template\":\"{{ 'boost' if value_json.boost | default(false) else 'none' }}\","
                  "\"min_temp\":5,\"max_temp\":25,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\","
-                 "\"availability_topic\":\"tado/gateway/status\","
+                 "\"availability\":[{\"topic\":\"tado/gateway/status\"},{\"topic\":\"tado/zone/11/state\","
+                 "\"value_template\":\"{{ 'offline' if value_json.stale | default(false) else 'online' }}\"}],"
+                 "\"availability_mode\":\"all\","
                  "\"device\":{\"identifiers\":[\"tado_zone_11\"],\"name\":\"Living\",\"manufacturer\":\"tado\"}}") == 0);
     struct tado_report none = {0};
     CHECK(ha_zone_entities(&none) == 1u << HA_ZONE_CLIMATE); /* from the start */
@@ -177,6 +179,9 @@ static void away_and_boost(void)
     t = (struct ha_target){.known = true, .on = false, .confirmed = true};
     struct tado_report empty = {0};
     CHECK(ha_zone_state(out, sizeof out, &empty, &t) && strcmp(out, "{\"confirmed\":true}") == 0);
+    t = (struct ha_target){.known = true, .on = true, .setpoint = 2000, .stale = true};
+    CHECK(ha_zone_state(out, sizeof out, &empty, &t) &&
+          strcmp(out, "{\"target\":20.00,\"confirmed\":false,\"stale\":true}") == 0);
 }
 
 void run_ha_tests(void)

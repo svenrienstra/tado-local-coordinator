@@ -88,6 +88,7 @@ struct ha_target {
     bool on;
     uint16_t setpoint; /* centi-degrees C, when on */
     bool confirmed;
+    bool stale; /* unconfirmed for longer than the gateway's stale time */
 };
 
 /* The setpoint the device reported it heats to (an overlay's, else its own);

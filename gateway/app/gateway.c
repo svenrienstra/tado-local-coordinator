@@ -198,6 +198,7 @@ static void save_install(struct gateway *g)
     memset(&in, 0, sizeof in);
     in.next_zone = g->next_zone;
     in.away = g->away;
+    in.stale_minutes = g->stale_minutes;
     for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
         const struct gateway_room *r = &g->rooms[i];
         if (!r->used)
@@ -276,7 +277,7 @@ static struct session_program program_of(const struct gateway *g, const struct g
 /* What the room heats to now, by the gateway's word, and whether its device
  * confirmed it: no write is waiting for its ACK and it reported that setpoint
  * (an overlay's, else its own). */
-static struct ha_target target_of(struct gateway *g, const struct gateway_room *r)
+static struct ha_target target_of(struct gateway *g, struct gateway_room *r)
 {
     struct tado_zone_block b;
     if (!session_zone_block(&g->session, r->zone, now(g), &b)) {
@@ -289,6 +290,13 @@ static struct ha_target target_of(struct gateway *g, const struct gateway_room *
     uint16_t reported;
     const struct session_zone *z = session_zone(&g->session, r->zone);
     t.confirmed = !z->writing && (!t.on || (ha_reported_setpoint(&r->r, &reported) && reported == t.setpoint));
+    if (t.confirmed) {
+        r->unconfirmed = false;
+    } else if (!r->unconfirmed) {
+        r->unconfirmed = true;
+        r->unconfirmed_ms = now(g);
+    }
+    t.stale = r->unconfirmed && g->stale_minutes && now(g) - r->unconfirmed_ms >= g->stale_minutes * 60000u;
     return t;
 }
 
@@ -561,6 +569,7 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
     }
     g->next_zone = in->next_zone;
     g->away = in->away;
+    g->stale_minutes = in->stale_minutes;
     sync_session(g);
 }
 
@@ -699,6 +708,17 @@ bool gateway_boost(struct gateway *g, uint8_t zone, bool on)
     if (done)
         notice(g, "room %s: boost %s", r->name, on ? "for 30 min" : "ended");
     return done;
+}
+
+bool gateway_set_stale_minutes(struct gateway *g, uint16_t minutes)
+{
+    if (minutes > INSTALL_STALE_MINUTES_MAX)
+        return false;
+    if (g->stale_minutes != minutes) {
+        g->stale_minutes = minutes;
+        save_soon(g);
+    }
+    return true;
 }
 
 uint32_t gateway_boost_left(struct gateway *g, uint8_t zone)

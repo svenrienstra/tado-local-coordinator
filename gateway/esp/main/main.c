@@ -456,6 +456,7 @@ void app_main(void)
 
     struct gateway_identity id = {0};
     static struct install install; /* off the main task's small stack */
+    install_empty(&install);
     if (load_identity(&id)) {
         load_install(&install);
     } else {
