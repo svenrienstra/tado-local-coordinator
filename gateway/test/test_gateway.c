@@ -719,7 +719,7 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     struct coap_msg write;
     CHECK(radio_job_coap(network_key(), &write) && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
     uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 2150, -1);
+    size_t wn = home_state(want, sizeof want, 2150, -1);
     CHECK_BYTES(write.payload, write.payload_len, want, wn);
 
     /* The device ACKs, then echoes the zone state, as the sensor does. */
@@ -879,7 +879,7 @@ static void a_room_whose_device_does_not_confirm_goes_unavailable(void)
 
     /* The device takes it after all: its echo, as at its periodic read. */
     uint8_t echo[64];
-    size_t en = tado_zone_state(echo, sizeof echo, 2100, -1);
+    size_t en = home_state(echo, sizeof echo, 2100, -1);
     struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3601, .payload = echo, .payload_len = en};
     coap_add_path(&put, "z/s");
     gw.session.zones[0].writing = false; /* its ACKs were lost: the gateway gave up */
@@ -897,6 +897,77 @@ static void a_room_whose_device_does_not_confirm_goes_unavailable(void)
     run_past_save();
     CHECK(saved.stale_minutes == 0);
     CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, "\"stale_minutes\":0"));
+}
+
+/* Away with a room off: confirmed only once the device reports off. A
+ * setpoint set while away is the home one: nothing goes to the device. */
+static void away_off_is_confirmed_by_the_device_and_setpoints_wait_for_home(void)
+{
+    struct gateway_identity id = identity_with_room(5000); /* away temperature: off */
+    start(&id);
+    run(3);
+    int jobs_before = jobs;
+    gateway_set_away(&gw, true);
+    CHECK(a_job_within(jobs_before));
+    struct coap_msg write;
+    CHECK(radio_job_coap(network_key(), &write));
+    struct coap_msg ack = {.type = COAP_ACK, .code = COAP_CODE(2, 4), .mid = write.mid};
+    device_sends_coap(&ack, 0x75, 0x3300);
+    run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"confirmed\":false")); /* ACKed, not yet reported */
+    uint8_t off[64];
+    size_t on = tado_zone_block(off, sizeof off, &(struct tado_zone_block){.away = true});
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3701, .payload = off, .payload_len = on};
+    coap_add_path(&put, "z/s");
+    device_sends_coap(&put, 0x76, 0x3301);
+    run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"confirmed\":true"));
+    a_job_within(jobs); /* the 2.04 to that report */
+
+    jobs_before = jobs;
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "21", 2, false);
+    CHECK(!a_job_within(jobs_before) && gateway_room(&gw, 11)->setpoint == 2100);
+    CHECK(logged("for when the home is back"));
+}
+
+/* An unconfirmed device that left its room does not make the next one stale. */
+static void a_new_device_in_a_room_starts_its_own_stale_time(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    uint8_t other[8];
+    memcpy(other, device(), 8);
+    other[0] ^= 0x20;
+    inst.n_devices = 2;
+    memcpy(inst.devices[1].eui, other, 8);
+    start(&id);
+    run(3);
+    gw.stale_minutes = 1;
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "21", 2, false);
+    for (int i = 0; i < 6000 + 10; i++)
+        run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"stale\":true"));
+    CHECK(gateway_assign(&gw, device(), 0));
+    run(1);
+    CHECK(gateway_assign(&gw, other, 11));
+    run(1);
+    CHECK(!strstr(last_on("tado/zone/11/state"), "stale"));
+}
+
+/* The page's room changes: a boost with a setpoint is refused, and a refused
+ * request changes nothing; settings take a whole number. */
+static void the_page_refuses_contradicting_room_changes(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    start(&id);
+    run(3);
+    static char out[4096];
+    CHECK(web("POST", "/api/rooms/11", "setpoint=21&boost=1", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms/11", "name=Kitchen&boost=0", out, sizeof out) == 409); /* none runs */
+    CHECK(strcmp(gateway_room(&gw, 11)->name, "Living") == 0 && gateway_room(&gw, 11)->setpoint == 1800);
+    CHECK(web("POST", "/api/settings", "stale_minutes=0abc", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/settings", "stale_minutes=3e1", out, sizeof out) == 400);
+    CHECK(gw.stale_minutes == INSTALL_STALE_MINUTES_DEFAULT);
+    CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, "\"boost_setpoint\":2500,\"boost_minutes\":30"));
 }
 
 /* A window that ends while d/pair is out does not cut the join short, and a
@@ -983,6 +1054,9 @@ void run_gateway_tests(void)
     the_home_goes_away_and_comes_back();
     a_boost_from_home_assistant();
     a_room_whose_device_does_not_confirm_goes_unavailable();
+    away_off_is_confirmed_by_the_device_and_setpoints_wait_for_home();
+    a_new_device_in_a_room_starts_its_own_stale_time();
+    the_page_refuses_contradicting_room_changes();
     a_join_under_way_outlasts_its_window();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();

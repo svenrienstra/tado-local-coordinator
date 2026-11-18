@@ -58,10 +58,6 @@ struct tado_zone_block {
 };
 size_t tado_zone_block(uint8_t *out, size_t cap, const struct tado_zone_block *b);
 
-/* At home and on at setpoint (centi-degrees C). With overlay >= 0 a manual
- * overlay at that setpoint; without (-1), 6240=0, which ends one the device
- * holds. */
-size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t overlay);
 
 /* coap://[fe80:0:0:0:..]/z/ for the device; false when it does not fit cap. */
 bool tado_zone_uri(char *out, size_t cap, const uint8_t device[8]);
@@ -80,6 +76,7 @@ enum tado_report_field {
     TADO_OVERLAY = 1u << 8,          /* 6240: 0 none, 1 until auto change, 2 manual, 3 timer */
     TADO_OVERLAY_ON = 1u << 9,       /* 6260 */
     TADO_OVERLAY_SETPOINT = 1u << 10, /* 6280, centi-C */
+    TADO_ON = 1u << 11,              /* 61e0: the zone's own program is on */
 };
 
 struct tado_report {
@@ -89,7 +86,7 @@ struct tado_report {
     uint8_t light, demand;
     uint16_t setpoint, overlay_setpoint;
     uint8_t overlay;
-    bool overlay_on;
+    bool overlay_on, on;
 };
 
 /* Decodes the known tags of a report body; others are skipped. False for a

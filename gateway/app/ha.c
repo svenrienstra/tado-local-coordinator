@@ -57,6 +57,8 @@ void ha_merge(struct tado_report *into, const struct tado_report *from)
         into->overlay_on = from->overlay_on;
     if (f & TADO_OVERLAY_SETPOINT)
         into->overlay_setpoint = from->overlay_setpoint;
+    if (f & TADO_ON)
+        into->on = from->on;
     into->fields |= f;
 }
 

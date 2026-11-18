@@ -282,6 +282,7 @@ static struct ha_target target_of(struct gateway *g, struct gateway_room *r)
     struct tado_zone_block b;
     if (!session_zone_block(&g->session, r->zone, now(g), &b)) {
         struct session_program p = program_of(g, r); /* no device: nothing to confirm */
+        r->unconfirmed = false;
         return (struct ha_target){.known = true, .on = p.on, .setpoint = p.setpoint};
     }
     struct ha_target t = {.known = true};
@@ -289,7 +290,9 @@ static struct ha_target target_of(struct gateway *g, struct gateway_room *r)
     t.setpoint = b.overlay ? b.overlay_setpoint : b.setpoint;
     uint16_t reported;
     const struct session_zone *z = session_zone(&g->session, r->zone);
-    t.confirmed = !z->writing && (!t.on || (ha_reported_setpoint(&r->r, &reported) && reported == t.setpoint));
+    /* Off is confirmed by a report that says off (61e0=0, no overlay on). */
+    bool reported_off = (r->r.fields & TADO_ON) && !r->r.on && !(r->r.overlay && r->r.overlay_on);
+    t.confirmed = !z->writing && (t.on ? ha_reported_setpoint(&r->r, &reported) && reported == t.setpoint : reported_off);
     if (t.confirmed) {
         r->unconfirmed = false;
     } else if (!r->unconfirmed) {
@@ -300,7 +303,7 @@ static struct ha_target target_of(struct gateway *g, struct gateway_room *r)
     return t;
 }
 
-static void publish_room(struct gateway *g, struct gateway_room *room)
+static void publish_room(struct gateway *g, struct gateway_room *room, const struct ha_target *target)
 {
     uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
     for (int e = HA_ZONE_FIRST; e <= HA_ZONE_LAST; e++)
@@ -308,7 +311,7 @@ static void publish_room(struct gateway *g, struct gateway_room *room)
                                                    room->zone, room->name, e))
             publish(g);
     room->discovered |= fresh;
-    room->target = target_of(g, room);
+    room->target = *target;
     if (ha_zone_state_topic(g->topic, sizeof g->topic, room->zone) &&
         ha_zone_state(g->payload, sizeof g->payload, &room->r, &room->target))
         publish(g);
@@ -345,7 +348,7 @@ static void publish_dirty(struct gateway *g)
         struct ha_target t = target_of(g, r);
         if (r->dirty || memcmp(&t, &r->target, sizeof t) != 0) {
             r->dirty = false;
-            publish_room(g, r);
+            publish_room(g, r, &t);
         }
     }
 }
@@ -650,6 +653,12 @@ bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
         r->setpoint = centi;
         save_soon(g);
     }
+    if (g->away) {
+        /* The home setpoint: in away the room follows its away temperature, so
+         * nothing goes to the device, and a boost or overlay keeps running. */
+        notice(g, "room %s: setpoint %u.%02u C, for when the home is back", r->name, centi / 100u, centi % 100u);
+        return true;
+    }
     /* Also when unchanged, to end an overlay set on the device. The device
      * confirms it: its next report echoes the zone state. */
     bool written = session_write_zone(&g->session, zone, now(g));
@@ -705,8 +714,10 @@ bool gateway_boost(struct gateway *g, uint8_t zone, bool on)
         return false;
     bool done = on ? session_boost(&g->session, zone, GATEWAY_BOOST_SETPOINT, GATEWAY_BOOST_MS, now(g))
                    : gateway_boost_left(g, zone) && session_end_overlay(&g->session, zone, now(g));
-    if (done)
-        notice(g, "room %s: boost %s", r->name, on ? "for 30 min" : "ended");
+    if (done && on)
+        notice(g, "room %s: boost to %u C for %u min", r->name, GATEWAY_BOOST_SETPOINT / 100u, GATEWAY_BOOST_MS / 60000u);
+    else if (done)
+        notice(g, "room %s: boost ended", r->name);
     return done;
 }
 

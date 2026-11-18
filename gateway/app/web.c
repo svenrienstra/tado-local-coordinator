@@ -57,9 +57,9 @@ static const char *pair_state(enum gateway_pair_state s)
 static void put_state(struct gateway *g, struct out *o)
 {
     char e[17];
-    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"away\":%s,\"stale_minutes\":%u,\"setpoint_min\":%u,\"setpoint_max\":%u,",
+    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"away\":%s,\"stale_minutes\":%u,\"boost_setpoint\":%u,\"boost_minutes\":%u,\"setpoint_min\":%u,\"setpoint_max\":%u,",
         g->configured ? "true" : "false", g->ops.unix_time(g->ops.ctx) ? "true" : "false",
-        (unsigned long)g->id.home_id, g->away ? "true" : "false", g->stale_minutes, HA_SETPOINT_MIN, HA_SETPOINT_MAX);
+        (unsigned long)g->id.home_id, g->away ? "true" : "false", g->stale_minutes, GATEWAY_BOOST_SETPOINT, GATEWAY_BOOST_MS / 60000u, HA_SETPOINT_MIN, HA_SETPOINT_MAX);
     put(o, "\"pair\":{\"state\":\"%s\",\"left\":%lu", pair_state(g->pair), (unsigned long)gateway_pair_left(g));
     if (g->pair == GATEWAY_PAIR_JOINED)
         put(o, ",\"joined\":\"%s\"", eui_str(g->pair_joined, e));
@@ -187,14 +187,21 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
         }
         if (boost_field == WEB_FIELD_BAD)
             return answer(o, 400, "boost: 1 or 0");
+        /* A setpoint ends a boost: the two together would contradict. */
+        if (boost_field == WEB_FIELD_OK && setpoint == WEB_FIELD_OK)
+            return answer(o, 400, "boost and setpoint: one at a time");
+        if (boost_field == WEB_FIELD_OK && boost[0] == '1' && !session_zone(&g->session, (uint8_t)zone))
+            return answer(o, 409, "boost: the room has no device");
+        if (boost_field == WEB_FIELD_OK && boost[0] == '0' && !gateway_boost_left(g, (uint8_t)zone))
+            return answer(o, 409, "boost: none runs");
         if (named == WEB_FIELD_OK)
             gateway_rename_room(g, (uint8_t)zone, name);
         if (setpoint == WEB_FIELD_OK)
             gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c);
         if (away_field == WEB_FIELD_OK)
             gateway_set_away_setpoint(g, (uint8_t)zone, (uint16_t)a);
-        if (boost_field == WEB_FIELD_OK && !gateway_boost(g, (uint8_t)zone, boost[0] == '1'))
-            return answer(o, 409, boost[0] == '1' ? "boost: the room has no device" : "boost: none runs");
+        if (boost_field == WEB_FIELD_OK)
+            gateway_boost(g, (uint8_t)zone, boost[0] == '1');
     } else {
         return answer(o, 404, "not found");
     }
@@ -240,9 +247,12 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
     if (strcmp(path, "/api/settings") == 0) {
         char value[8];
         int32_t minutes = -1;
+        char *end;
         if (web_form(body, body_len, "stale_minutes", value, sizeof value) == WEB_FIELD_OK && value[0] >= '0' &&
-            value[0] <= '9')
-            minutes = (int32_t)strtol(value, NULL, 10);
+            value[0] <= '9') {
+            long v = strtol(value, &end, 10);
+            minutes = *end == '\0' ? (int32_t)v : -1;
+        }
         if (minutes < 0 || !gateway_set_stale_minutes(g, (uint16_t)minutes)) {
             char error[48];
             snprintf(error, sizeof error, "stale_minutes: 0-%u", INSTALL_STALE_MINUTES_MAX);

@@ -255,7 +255,7 @@ function roomTile(r) {
   const del = el("button", { title: "Delete" }, icon("trash"));
   del.onclick = () => { if (confirm(`Delete ${r.name}?${d ? " Its device goes to No room." : ""}`)) act(`/api/rooms/${r.zone}/delete`); };
   const boosting = r.boost_left > 0;
-  const boost = el("button", { title: boosting ? "End boost" : "Boost: 25° for 30 min", className: boosting ? "on" : "" }, icon("bolt"));
+  const boost = el("button", { title: boosting ? "End boost" : `Boost: ${deg(state.boost_setpoint / 100)} for ${state.boost_minutes} min`, className: boosting ? "on" : "" }, icon("bolt"));
   boost.disabled = !d;
   boost.onclick = () => act(`/api/rooms/${r.zone}`, { boost: boosting ? "0" : "1" });
   const awayTemp = el("button", { title: `While away: ${r.away_setpoint ? deg(r.away_setpoint / 100) : "off"}` }, icon("moon"));

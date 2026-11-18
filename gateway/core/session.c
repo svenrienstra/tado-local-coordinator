@@ -412,7 +412,8 @@ static void on_device_overlay(struct session *s, const uint8_t device[8], const 
     } else if (r.fields & TADO_OVERLAY_SETPOINT) {
         uint32_t c = r.overlay_setpoint;
         z->overlay = true;
-        z->overlay_kind = TADO_OVERLAY_MANUAL;
+        /* As the device reports it (a manual change is 2); its end is ours. */
+        z->overlay_kind = (r.fields & TADO_OVERLAY) && r.overlay >= 1 && r.overlay <= 3 ? r.overlay : TADO_OVERLAY_MANUAL;
         z->overlay_setpoint = (uint16_t)c;
         z->overlay_start_ms = now;
         z->overlay_for_ms = s->overlay_ms;

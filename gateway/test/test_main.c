@@ -302,9 +302,9 @@ static void test_tado_documents(void)
     tado_etag(doc, n, tag);
     CHECK_VEC(tag, sizeof tag, "doc.etag_zone");
 
-    n = tado_zone_state(doc, sizeof doc, 1800, -1);
+    n = home_state(doc, sizeof doc, 1800, -1);
     CHECK_VEC(doc, n, "doc.zone_state");
-    n = tado_zone_state(doc, sizeof doc, 1800, 2100);
+    n = home_state(doc, sizeof doc, 1800, 2100);
     CHECK_VEC(doc, n, "doc.zone_state_overlay");
 
     char uri[64];
@@ -411,7 +411,7 @@ static void test_tado_resources(void)
     CHECK_VEC(out, n, "res.empty_ack");
 
     uint8_t state[64];
-    size_t sn = tado_zone_state(state, sizeof state, 1800, -1);
+    size_t sn = home_state(state, sizeof state, 1800, -1);
     n = tado_zone_state_write(out, sizeof out, 11, state, sn, 0x1234, coord(), device());
     CHECK_VEC(out, n, "res.zone_state_write");
     CHECK(tado_zone_state_write(out, n - 1, 11, state, sn, 0x1234, coord(), device()) == 0);

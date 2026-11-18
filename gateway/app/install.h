@@ -10,7 +10,7 @@
 /* The installation as it is kept in flash: the rooms and the devices joined
  * to us, each in a room or in none (docs/PLAN.md 3.8, 3.9).
  *
- * Encoded as version 1, little-endian:
+ * Encoded as version 2, little-endian:
  *   01 | flags (bit 0: away) | next_zone | stale_minutes u16 | n_rooms |
  *   (zone, setpoint u16, away_setpoint u16, name_len, name)... |
  *   n_devices | (eui[8], zone, serial_len, serial)...
@@ -20,7 +20,7 @@
 #define INSTALL_MAX_DEVICES 16
 #define INSTALL_NAME_MAX    23 /* bytes of UTF-8 */
 #define INSTALL_SERIAL_MAX  15
-#define INSTALL_VERSION     1
+#define INSTALL_VERSION     2 /* 1 never ran on a gateway: nothing to read it from */
 /* After how long unconfirmed a room shows as unavailable (gateway.h). */
 #define INSTALL_STALE_MINUTES_DEFAULT 30
 #define INSTALL_STALE_MINUTES_MAX     1440
@@ -60,8 +60,8 @@ size_t install_encode(const struct install *in, uint8_t *out, size_t cap);
 /* No rooms and no devices, and the default settings: before the first save. */
 void install_empty(struct install *in);
 
-/* False, with *in emptied (install_empty), for anything but a whole version 1
- * blob. */
+/* False, with *in emptied (install_empty), for anything but a whole blob of
+ * this version. */
 bool install_decode(const uint8_t *blob, size_t len, struct install *in);
 
 #endif

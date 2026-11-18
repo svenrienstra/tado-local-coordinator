@@ -596,7 +596,7 @@ static void serves_the_installations_devices_their_config_and_zone_document(void
     m = get(0x0205, "h/4242/z/11/s");
     from_joiner(&s, false, &m);
     c = coap_of(2);
-    wn = tado_zone_state(want, sizeof want, SESSION_DEFAULT_SETPOINT, -1);
+    wn = home_state(want, sizeof want, SESSION_DEFAULT_SETPOINT, -1);
     CHECK_BYTES(c.payload, c.payload_len, want, wn);
 
     m = get(0x0203, "h/4242/z/12/config");
@@ -707,7 +707,7 @@ static void keeps_a_setpoint_set_on_the_device_for_the_overlay_time_then_writes_
     m = get(0x0302, "h/4242/z/11/s");
     from_joiner(&s, false, &m);
     uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 1800, 2100);
+    size_t wn = home_state(want, sizeof want, 1800, 2100);
     struct coap_msg st = coap_of((size_t)unicast(1));
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 
@@ -720,7 +720,7 @@ static void keeps_a_setpoint_set_on_the_device_for_the_overlay_time_then_writes_
     CHECK(write.type == COAP_CON && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
     const struct coap_option *q = coap_find(&write, COAP_OPT_URI_QUERY);
     CHECK(q && q->len == 5 && memcmp(q->value, "id=11", 5) == 0);
-    wn = tado_zone_state(want, sizeof want, 1800, -1); /* 6240=0, no 6440 */
+    wn = home_state(want, sizeof want, 1800, -1); /* 6240=0, no 6440 */
     CHECK_BYTES(write.payload, write.payload_len, want, wn);
 
     m = get(0x0303, "h/4242/z/11/s");
@@ -775,7 +775,7 @@ static void an_overlay_the_device_ends_or_that_is_not_its_zone_leaves_nothing_to
     m = get(0x0325, "h/4242/z/11/s");
     from_joiner(&s, false, &m);
     uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 1800, -1);
+    size_t wn = home_state(want, sizeof want, 1800, -1);
     struct coap_msg st = coap_of((size_t)unicast(4));
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 }
@@ -794,7 +794,7 @@ static void an_overlay_time_of_zero_keeps_the_devices_setpoint_until_changed(voi
     from_joiner(&s, false, &m);
     CHECK(unicasts() == 2);
     uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 1800, 2100);
+    size_t wn = home_state(want, sizeof want, 1800, 2100);
     struct coap_msg st = coap_of((size_t)unicast(1));
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 }
@@ -947,7 +947,7 @@ static void writes_a_new_setpoint_to_the_owner(void)
     m = get(0x0602, "h/4242/z/11/s");
     from_joiner(&s, false, &m);
     struct coap_msg st = coap_of((size_t)unicast(2));
-    wn = tado_zone_state(want, sizeof want, 2150, -1);
+    wn = home_state(want, sizeof want, 2150, -1);
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 
     struct coap_msg a = ack(write.mid, COAP_CODE(2, 5));
@@ -969,7 +969,7 @@ static void writes_a_new_setpoint_to_the_owner(void)
     tx_done(&s, first + 1, LINK_ACKED); /* handles are index + 1 */
     CHECK(unicasts() == 5);
     struct coap_msg w1 = coap_of((size_t)first), w2 = coap_of((size_t)unicast(4));
-    wn = tado_zone_state(want, sizeof want, 2000, -1);
+    wn = home_state(want, sizeof want, 2000, -1);
     CHECK(w1.mid != w2.mid);
     CHECK_BYTES(w2.payload, w2.payload_len, want, wn);
     struct coap_msg a2 = ack(w2.mid, COAP_CODE(2, 4));
@@ -987,7 +987,7 @@ static void writes_a_new_setpoint_to_the_owner(void)
     now += SESSION_TX_DONE_TIMEOUT_MS;
     session_tick(&s, now);
     CHECK(unicasts() == 7);
-    wn = tado_zone_state(want, sizeof want, 2200, -1);
+    wn = home_state(want, sizeof want, 2200, -1);
     struct coap_msg w3 = coap_of((size_t)unicast(6));
     CHECK_BYTES(w3.payload, w3.payload_len, want, wn);
 }
@@ -1069,6 +1069,20 @@ static void the_switch_to_away_restates_each_zone(void)
     CHECK(!session_restate_zone(&s, 12, true, now));
 }
 
+/* A timer overlay the device reports is kept as a timer, not turned manual. */
+static void keeps_the_kind_of_overlay_the_device_reports(void)
+{
+    static struct session s;
+    serving_zone11(&s, 3600000u);
+    static const uint8_t timer[] = {0x62, 0x80, 0x02, 0x09, 0xc4, 0x62, 0x40, 0x01, 0x03, 0x62, 0x60, 0x01, 0x01};
+    struct coap_msg m = overlay_put(0x0901, "h/4242/z/11/overlay", timer, sizeof timer);
+    from_joiner(&s, false, &m);
+    CHECK(s.zones[0].overlay && s.zones[0].overlay_kind == TADO_OVERLAY_TIMER);
+    m = overlay_put(0x0902, "h/4242/z/11/overlay", OVERLAY_21C, sizeof OVERLAY_21C);
+    from_joiner(&s, false, &m);
+    CHECK(s.zones[0].overlay_kind == TADO_OVERLAY_MANUAL);
+}
+
 void run_session_tests(void)
 {
     verbose = getenv("VERBOSE") != NULL;
@@ -1103,4 +1117,5 @@ void run_session_tests(void)
     writes_a_new_setpoint_to_the_owner();
     a_boost_runs_its_time_or_until_cancelled();
     the_switch_to_away_restates_each_zone();
+    keeps_the_kind_of_overlay_the_device_reports();
 }

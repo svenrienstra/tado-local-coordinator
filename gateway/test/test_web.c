@@ -29,7 +29,7 @@ static void the_installation_survives_its_encoding(void)
         CHECK(!install_decode(blob, cut, &out) && out.n_rooms == 0 && out.n_devices == 0);
     blob[n] = 0;
     CHECK(!install_decode(blob, n + 1, &out));
-    blob[0] = 2;
+    blob[0] = INSTALL_VERSION + 1;
     CHECK(!install_decode(blob, n, &out)); /* another version */
     CHECK(install_encode(&in, blob, n - 1) == 0);
 

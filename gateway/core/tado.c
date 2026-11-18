@@ -129,17 +129,6 @@ size_t tado_zone_block(uint8_t *out, size_t cap, const struct tado_zone_block *b
     return done(&o);
 }
 
-size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t overlay)
-{
-    struct tado_zone_block b = {.on = true, .setpoint = setpoint};
-    if (overlay >= 0) {
-        b.overlay = TADO_OVERLAY_MANUAL;
-        b.overlay_on = true;
-        b.overlay_setpoint = (uint16_t)overlay;
-    }
-    return tado_zone_block(out, cap, &b);
-}
-
 bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r)
 {
     memset(r, 0, sizeof *r);
@@ -166,6 +155,7 @@ bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r)
         case 0x6240: r->overlay = (uint8_t)u; r->fields |= TADO_OVERLAY; break;
         case 0x6260: r->overlay_on = u != 0; r->fields |= TADO_OVERLAY_ON; break;
         case 0x6280: r->overlay_setpoint = (uint16_t)u; r->fields |= TADO_OVERLAY_SETPOINT; break;
+        case 0x61e0: r->on = u != 0; r->fields |= TADO_ON; break;
         default: break;
         }
     }
