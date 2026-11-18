@@ -29,7 +29,13 @@
   .logo { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--panel2); color: var(--accent); }
   .logo svg { width: 20px; height: 20px; }
   .brand span { color: var(--accent); }
-  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .presence { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; background: var(--panel); }
+  .presence button { border: 0; border-radius: 999px; padding: 4px 12px; font-size: 13px; background: transparent; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .presence button.on { background: var(--accent); color: #fff; font-weight: 600; }
+  .tools button.on { background: rgba(0,0,0,.28); }
+  .tools button:disabled { opacity: .35; cursor: default; }
+  body.away .tile.idle, body.away .tile.heat { filter: saturate(.75); }
   .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line);
           border-radius: 999px; padding: 4px 10px; box-shadow: var(--shadow); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
@@ -54,7 +60,7 @@
           background: var(--none); color: var(--none-ink); }
   .tile.heat { background: var(--heat); color: var(--heat-ink); }
   .tile.idle { background: var(--idle); color: var(--idle-ink); }
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; min-height: 24px; padding-right: 64px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 2px 8px;
           background: rgba(0,0,0,.12); }
   .chip svg { width: 13px; height: 13px; }
@@ -62,7 +68,7 @@
   .tools button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 9px; border: 0;
                   background: rgba(0,0,0,.10); color: inherit; cursor: pointer; }
   .tools button:hover { background: rgba(0,0,0,.2); }
-  .temp { font-size: 52px; font-weight: 750; letter-spacing: -.03em; line-height: 1; margin: 10px 0 2px; font-variant-numeric: tabular-nums; }
+  .temp { font-size: 52px; font-weight: 750; letter-spacing: -.03em; line-height: 1; margin: 22px 0 2px; font-variant-numeric: tabular-nums; }
   .temp sup { font-size: 22px; vertical-align: 26px; margin-left: 1px; }
   .temp small { font-size: 22px; font-weight: 700; margin-left: -8px; }
   .temp.none { font-size: 34px; opacity: .55; margin-top: 18px; }
@@ -113,10 +119,17 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
   <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5V3h4M16 17l5-5-5-5M21 12H9"/></symbol>
 </svg>
 <main>
   <header>
     <div class="brand"><div class="logo"><svg><use href="#i-home"/></svg></div>tado <span>gateway</span></div>
+    <div class="presence" id="presence">
+      <button id="at-home"><svg><use href="#i-home"/></svg>Home</button>
+      <button id="away"><svg><use href="#i-out"/></svg>Away</button>
+    </div>
     <div class="pills" id="status"><span class="pill">Loading…</span></div>
   </header>
 
@@ -218,7 +231,8 @@ function roomTile(r) {
   if (ds.humidity != null) chips.append(chip("drop", `${ds.humidity.toFixed(0)}%`));
   if (heating) chips.append(chip("flame", `${s.demand}%`));
   if (d && d.waiting) chips.append(chip("clock", "taking the room"));
-  tile.append(chips);
+  if (r.boost_left > 0) chips.append(chip("bolt", `boost ${Math.ceil(r.boost_left / 60)} min`));
+  if (state.away) chips.append(chip("moon", r.away_setpoint ? `away ${deg(r.away_setpoint / 100)}` : "off while away"));
 
   const rename = el("button", { title: "Rename" }, icon("edit"));
   rename.onclick = () => {
@@ -227,7 +241,16 @@ function roomTile(r) {
   };
   const del = el("button", { title: "Delete" }, icon("trash"));
   del.onclick = () => { if (confirm(`Delete ${r.name}?${d ? " Its device goes to No room." : ""}`)) act(`/api/rooms/${r.zone}/delete`); };
-  tile.append(el("div", { className: "tools" }, rename, del));
+  const boosting = r.boost_left > 0;
+  const boost = el("button", { title: boosting ? "End boost" : "Boost: 25° for 30 min", className: boosting ? "on" : "" }, icon("bolt"));
+  boost.disabled = !d;
+  boost.onclick = () => act(`/api/rooms/${r.zone}`, { boost: boosting ? "0" : "1" });
+  const awayTemp = el("button", { title: `While away: ${r.away_setpoint ? deg(r.away_setpoint / 100) : "off"}` }, icon("moon"));
+  awayTemp.onclick = () => {
+    const v = prompt("Temperature while away, in °C (empty: off)", r.away_setpoint ? String(r.away_setpoint / 100) : "");
+    if (v !== null) act(`/api/rooms/${r.zone}`, { away_setpoint: v.trim() === "" ? "off" : v.trim().replace(",", ".") });
+  };
+  tile.append(el("div", { className: "tools" }, boost, awayTemp, rename, del));
 
   tile.append(bigTemp(d ? s.temperature : null));
   tile.append(el("div", { className: "room", textContent: r.name }));
@@ -236,6 +259,7 @@ function roomTile(r) {
     : s.temperature != null ? [icon("check"), s.setpoint != null ? `Idle · ${deg(s.setpoint)}` : "Idle"]
     : [icon("clock"), "Waiting for its first report"];
   tile.append(el("div", { className: "state" }, ...line));
+  if (chips.childElementCount) tile.append(chips);
 
   /* The room's own setpoint, as the gateway keeps it; the device confirms it
    * in its next report (the status line). Clicks add up on the page and go
@@ -294,6 +318,9 @@ function deviceCard(d) {
 }
 
 function render() {
+  document.body.classList.toggle("away", state.away);
+  $("at-home").className = state.away ? "" : "on";
+  $("away").className = state.away ? "on" : "";
   const pill = (ok, yes, no) => el("span", { className: "pill" }, el("i", { className: ok ? "dot" : "dot off" }), ok ? yes : no);
   $("status").replaceChildren(
     pill(state.cc1312, "Radio ready", "Radio not ready"),
@@ -342,6 +369,8 @@ async function refresh() {
 }
 
 $("pair").onclick = () => act("/api/pair");
+$("at-home").onclick = () => act("/api/home", { away: "0" });
+$("away").onclick = () => act("/api/home", { away: "1" });
 $("pair-cancel").onclick = () => act("/api/pair/close");
 refresh();
 /* Not while the tab is hidden: each poll is work on the gateway's task. */

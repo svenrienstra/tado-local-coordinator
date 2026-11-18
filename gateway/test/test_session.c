@@ -64,13 +64,17 @@ static uint32_t stub_unix(void *ctx)
     return clock_unset ? 0 : 1793966400u + now / 1000u;
 }
 
-/* Each zone's setpoint, as the gateway keeps it. */
-static uint16_t setpoints[256];
+/* Each zone's setpoint and away temperature (0: off in away), and the home
+ * state, as the gateway keeps them. */
+static uint16_t setpoints[256], away_temps[256];
+static bool away;
 
-static uint16_t stub_setpoint(void *ctx, uint8_t zone)
+static void stub_program(void *ctx, uint8_t zone, struct session_program *p)
 {
     (void)ctx;
-    return setpoints[zone] ? setpoints[zone] : SESSION_DEFAULT_SETPOINT;
+    p->away = away;
+    p->on = !away || away_temps[zone] != 0;
+    p->setpoint = away ? away_temps[zone] : setpoints[zone] ? setpoints[zone] : SESSION_DEFAULT_SETPOINT;
 }
 
 /* The last report handed to the gateway. */
@@ -122,7 +126,7 @@ static const struct session_ops OPS = {.tx = stub_tx,
                                        .log = stub_log,
                                        .rng = stub_rng,
                                        .unix_time = stub_unix,
-                                       .setpoint = stub_setpoint,
+                                       .program = stub_program,
                                        .on_report = stub_on_report,
                                        .on_request = stub_on_request,
                                        .on_joined = stub_on_joined};
@@ -140,6 +144,8 @@ static void fresh(struct session *s, bool pair_window)
     clock_unset = false;
     memset(&reported, 0, sizeof reported);
     memset(setpoints, 0, sizeof setpoints);
+    memset(away_temps, 0, sizeof away_temps);
+    away = false;
     memset(&requests, 0, sizeof requests);
     joined_count = 0;
     join_into_zone = -1;
@@ -932,14 +938,16 @@ static void writes_a_new_setpoint_to_the_owner(void)
     CHECK(w >= 0 && sent[w].tx.flags == LINK_TX_TRAIN_ANCHORED);
     struct coap_msg write = coap_of((size_t)w);
     CHECK(write.type == COAP_CON && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
+    /* It ends the device's overlay: a cancel, with 6440. */
     uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 2150, -1);
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){.on = true, .setpoint = 2150, .marker = true});
     CHECK_BYTES(write.payload, write.payload_len, want, wn);
 
     /* The zone serves it, without the device's overlay. */
     m = get(0x0602, "h/4242/z/11/s");
     from_joiner(&s, false, &m);
     struct coap_msg st = coap_of((size_t)unicast(2));
+    wn = tado_zone_state(want, sizeof want, 2150, -1);
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 
     struct coap_msg a = ack(write.mid, COAP_CODE(2, 5));
@@ -984,6 +992,83 @@ static void writes_a_new_setpoint_to_the_owner(void)
     CHECK_BYTES(w3.payload, w3.payload_len, want, wn);
 }
 
+/* The block of the last write to the device, against what it should be. */
+static void last_write_is(const struct tado_zone_block *b)
+{
+    int w = unicast(unicasts() - 1);
+    CHECK(w >= 0);
+    struct coap_msg m = coap_of((size_t)w);
+    CHECK(m.code == COAP_PUT && coap_path_is(&m, "z/s"));
+    uint8_t want[64];
+    size_t wn = tado_zone_block(want, sizeof want, b);
+    CHECK_BYTES(m.payload, m.payload_len, want, wn);
+}
+
+/* Boost: a timer overlay at 25 C, served while it runs, and the return to the
+ * program at its end (no marker) or at a cancel (marker). */
+static void a_boost_runs_its_time_or_until_cancelled(void)
+{
+    static struct session s;
+    serving_zone11(&s, 3600000u);
+    CHECK(!session_end_overlay(&s, 11, now)); /* none runs */
+    CHECK(session_boost(&s, 11, 2500, 1800000u, now));
+    last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800, .overlay = TADO_OVERLAY_TIMER,
+                                            .overlay_on = true, .overlay_setpoint = 2500, .marker = true});
+    struct coap_msg m = get(0x0701, "h/4242/z/11/s");
+    from_joiner(&s, false, &m);
+    struct coap_msg st = coap_of((size_t)unicast(unicasts() - 1));
+    uint8_t want[64];
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){
+        .on = true, .setpoint = 1800, .overlay = TADO_OVERLAY_TIMER, .overlay_on = true, .overlay_setpoint = 2500});
+    CHECK_BYTES(st.payload, st.payload_len, want, wn);
+
+    size_t before = unicasts();
+    tx_done(&s, (int)n_sent, LINK_ACKED);
+    struct coap_msg a = ack(coap_of((size_t)unicast(0)).mid, COAP_CODE(2, 4));
+    from_joiner(&s, false, &a);
+    now += 1800000u - 1;
+    session_tick(&s, now);
+    CHECK(unicasts() == before); /* not yet */
+    now += 1;
+    session_tick(&s, now);
+    last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800}); /* expiry: no 6440 */
+
+    /* Cancelled before its end. */
+    serving_zone11(&s, 3600000u);
+    CHECK(session_boost(&s, 11, 2500, 1800000u, now));
+    tx_done(&s, (int)n_sent, LINK_ACKED);
+    CHECK(session_end_overlay(&s, 11, now));
+    last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800, .marker = true});
+}
+
+/* Home and away: each zone is restated with the program in force. A target
+ * that moved is marked; a running overlay is kept, unmarked. */
+static void the_switch_to_away_restates_each_zone(void)
+{
+    static struct session s;
+    serving_zone11(&s, 3600000u);
+    away = true;
+    away_temps[11] = 1500;
+    CHECK(session_restate_zone(&s, 11, true, now));
+    last_write_is(&(struct tado_zone_block){.away = true, .on = true, .setpoint = 1500, .marker = true});
+    tx_done(&s, (int)n_sent, LINK_ACKED);
+
+    away_temps[11] = 0; /* off in away */
+    CHECK(session_restate_zone(&s, 11, true, now));
+    last_write_is(&(struct tado_zone_block){.away = true, .marker = true});
+    tx_done(&s, (int)n_sent, LINK_ACKED);
+
+    /* A setpoint set on the device survives the switch home. */
+    struct coap_msg m = overlay_put(0x0801, "h/4242/z/11/overlay", OVERLAY_21C, sizeof OVERLAY_21C);
+    from_joiner(&s, false, &m);
+    tx_done(&s, (int)n_sent, LINK_ACKED);
+    away = false;
+    CHECK(session_restate_zone(&s, 11, true, now));
+    last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800, .overlay = TADO_OVERLAY_MANUAL,
+                                            .overlay_on = true, .overlay_setpoint = 2100});
+    CHECK(!session_restate_zone(&s, 12, true, now));
+}
+
 void run_session_tests(void)
 {
     verbose = getenv("VERBOSE") != NULL;
@@ -1016,4 +1101,6 @@ void run_session_tests(void)
     hands_a_decoded_report_to_the_gateway();
     leaves_time_unanswered_until_the_clock_is_set();
     writes_a_new_setpoint_to_the_owner();
+    a_boost_runs_its_time_or_until_cancelled();
+    the_switch_to_away_restates_each_zone();
 }

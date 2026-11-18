@@ -338,20 +338,25 @@ static struct session_zone *zone_path(struct session *s, const struct path *p, c
     return zone >= 0 && zone <= 0xff ? zone_find(s, (unsigned)zone) : NULL;
 }
 
-static uint16_t setpoint_of(struct session *s, const struct session_zone *z)
-{
-    return s->ops.setpoint(s->ops.ctx, z->zone);
-}
-
 static bool overlay_over(const struct session_zone *z, uint32_t now)
 {
     return z->overlay_for_ms != 0 && elapsed(now, z->overlay_start_ms, z->overlay_for_ms);
 }
 
-/* The zone's running overlay setpoint, or -1. */
-static int32_t overlay_of(const struct session_zone *z, uint32_t now)
+static bool overlay_running(const struct session_zone *z, uint32_t now) { return z->overlay && !overlay_over(z, now); }
+
+/* The zone's state: its program, and the overlay it runs. */
+static struct tado_zone_block block_of(struct session *s, const struct session_zone *z, uint32_t now)
 {
-    return z->overlay && !overlay_over(z, now) ? z->overlay_setpoint : -1;
+    struct session_program p;
+    s->ops.program(s->ops.ctx, z->zone, &p);
+    struct tado_zone_block b = {.away = p.away, .on = p.on, .setpoint = p.setpoint};
+    if (overlay_running(z, now)) {
+        b.overlay = z->overlay_kind;
+        b.overlay_on = true;
+        b.overlay_setpoint = z->overlay_setpoint;
+    }
+    return b;
 }
 
 /* Builds in s->doc the configuration (d/<serial>/config), zone document
@@ -371,8 +376,10 @@ static size_t document_for(struct session *s, const uint8_t device[8], const str
     struct session_zone *z = zone_path(s, p, &leaf);
     if (z && seg_is(leaf, "config"))
         return tado_zone_with_owner(s->doc, sizeof s->doc, z->owner);
-    if (z && seg_is(leaf, "s"))
-        return tado_zone_state(s->doc, sizeof s->doc, setpoint_of(s, z), overlay_of(z, now));
+    if (z && seg_is(leaf, "s")) {
+        struct tado_zone_block b = block_of(s, z, now);
+        return tado_zone_block(s->doc, sizeof s->doc, &b);
+    }
     return 0;
 }
 
@@ -405,6 +412,7 @@ static void on_device_overlay(struct session *s, const uint8_t device[8], const 
     } else if (r.fields & TADO_OVERLAY_SETPOINT) {
         uint32_t c = r.overlay_setpoint;
         z->overlay = true;
+        z->overlay_kind = TADO_OVERLAY_MANUAL;
         z->overlay_setpoint = (uint16_t)c;
         z->overlay_start_ms = now;
         z->overlay_for_ms = s->overlay_ms;
@@ -425,17 +433,25 @@ static void send_zone_write(struct session *s, struct session_zone *z, uint32_t 
     z->write_handle = send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
 }
 
-/* Writes the zone's own state, with no overlay, to its owner, under a new
- * MID. While the last write's frame still waits on the CC1312 for the
- * device's sample, it is not queued again: it goes when that frame left, so
- * a burst of changes costs the device one wake-up, with the newest. */
-static void write_zone(struct session *s, struct session_zone *z, uint32_t now, const char *why)
+/* Writes the zone's state to its owner, under a new MID; end_overlay drops
+ * the overlay first, marker sets 6440. While the last write's frame still
+ * waits on the CC1312 for the device's sample, it is not queued again: it
+ * goes when that frame left, so a burst of changes costs the device one
+ * wake-up, with the newest. */
+static void write_zone(struct session *s, struct session_zone *z, uint32_t now, const char *why, bool end_overlay,
+                       bool marker)
 {
-    uint16_t c = setpoint_of(s, z);
-    say(s, "zone %u: %s, writing %u.%02u C to its owner", z->zone, why, c / 100u, c % 100u);
+    if (end_overlay)
+        z->overlay = false;
+    struct tado_zone_block b = block_of(s, z, now);
+    b.marker = marker;
+    uint16_t c = b.overlay ? b.overlay_setpoint : b.setpoint;
+    if (b.on || b.overlay)
+        say(s, "zone %u: %s, writing %u.%02u C to its owner", z->zone, why, c / 100u, c % 100u);
+    else
+        say(s, "zone %u: %s, writing off to its owner", z->zone, why);
     uint8_t state[64];
-    size_t sn = tado_zone_state(state, sizeof state, c, -1);
-    z->overlay = false;
+    size_t sn = tado_zone_block(state, sizeof state, &b);
     z->write_mid = s->next_mid++;
     z->write_len = (uint8_t)tado_zone_state_write(z->write_packet, sizeof z->write_packet, z->zone, state, sn,
                                                   z->write_mid, s->coordinator, z->owner);
@@ -452,7 +468,41 @@ bool session_write_zone(struct session *s, uint8_t zone, uint32_t now)
     struct session_zone *z = zone_find(s, zone);
     if (!z)
         return false;
-    write_zone(s, z, now, "new setpoint");
+    /* An overlay it ends is a cancel, which the app marks. */
+    write_zone(s, z, now, "new setpoint", true, overlay_running(z, now));
+    return true;
+}
+
+bool session_restate_zone(struct session *s, uint8_t zone, bool changed, uint32_t now)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (!z)
+        return false;
+    /* A write under a running overlay carries no marker (freedo PROTOCOL.md). */
+    write_zone(s, z, now, "new program", false, changed && !overlay_running(z, now));
+    return true;
+}
+
+bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t for_ms, uint32_t now)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (!z)
+        return false;
+    z->overlay = true;
+    z->overlay_kind = TADO_OVERLAY_TIMER;
+    z->overlay_setpoint = setpoint;
+    z->overlay_start_ms = now;
+    z->overlay_for_ms = for_ms;
+    write_zone(s, z, now, "boost", false, true);
+    return true;
+}
+
+bool session_end_overlay(struct session *s, uint8_t zone, uint32_t now)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (!z || !overlay_running(z, now))
+        return false;
+    write_zone(s, z, now, "overlay cancelled", true, true);
     return true;
 }
 
@@ -464,7 +514,8 @@ static void end_overlays(struct session *s, uint32_t now)
         struct session_zone *z = &s->zones[i];
         if (!z->used || !z->overlay || !overlay_over(z, now))
             continue;
-        write_zone(s, z, now, "the device's overlay ran out");
+        /* The expiry the coordinator keeps: no marker, as the bridge writes it. */
+        write_zone(s, z, now, "its overlay ran out", true, false);
     }
 }
 

@@ -33,6 +33,9 @@
 #define GATEWAY_PAIR_WINDOW_S   120u
 /* How long after the last setpoint change it is saved to flash. */
 #define GATEWAY_SAVE_DELAY_MS   30000u
+/* A boost, as the tado app's: 25 C for 30 minutes (freedo BoostDuration). */
+#define GATEWAY_BOOST_SETPOINT  2500u
+#define GATEWAY_BOOST_MS        (30u * 60000u)
 /* Counters the CC1312 may use on its own (beacon answers) between two TXs. */
 #define GATEWAY_COUNTER_MARGIN  256u
 
@@ -88,6 +91,7 @@ struct gateway {
     uint8_t pair_joined[8];
     uint8_t refused[8];       /* the last device the full table turned away */
     uint8_t next_zone;        /* where a new room's number is looked for */
+    bool away;                /* the whole home */
     bool save_pending;        /* setpoints changed and not yet saved */
     uint32_t save_due_ms;
 
@@ -105,7 +109,8 @@ struct gateway {
     struct gateway_room {
         bool used, dirty;
         uint8_t zone;
-        uint16_t setpoint;    /* centi-degrees C */
+        uint16_t setpoint;    /* centi-degrees C, at home */
+        uint16_t away_setpoint; /* in away; 0: off */
         char name[INSTALL_NAME_MAX + 1];
         struct tado_report r; /* its owner's reports */
         uint32_t discovered;
@@ -150,6 +155,21 @@ bool gateway_delete_room(struct gateway *g, uint8_t zone);
  * it already. False for no such room or a setpoint out of range. */
 bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
 
+/* Home or away, for the whole home: each room follows its away temperature
+ * in away (or is off), and an overlay running in a room is kept. */
+void gateway_set_away(struct gateway *g, bool away);
+
+/* The room's away temperature (centi-degrees C, HA_SETPOINT_MIN..MAX), or 0
+ * for off in away. False for no such room or a value out of range. */
+bool gateway_set_away_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
+
+/* Starts the room's boost (GATEWAY_BOOST_SETPOINT for GATEWAY_BOOST_MS), or
+ * ends it. False when the room has no device, or no boost runs to end. */
+bool gateway_boost(struct gateway *g, uint8_t zone, bool on);
+
+/* Seconds the room's boost has left, 0 when none runs. */
+uint32_t gateway_boost_left(struct gateway *g, uint8_t zone);
+
 /* Puts a joined device in a room (zone 0: none). One device per room until
  * zones get members (PLAN.md M4): false when the room has another device,
  * or there is no such room or device. The device takes it at its next config
@@ -160,7 +180,8 @@ struct gateway_device *gateway_device(struct gateway *g, const uint8_t eui[8]);
 struct gateway_room *gateway_room(struct gateway *g, uint8_t zone);
 
 /* An MQTT message for the gateway: tado/gateway/pair/set opens a pair window,
- * tado/zone/<n>/setpoint/set sets a room's setpoint (degrees C). Empty and
+ * tado/home/set takes home or away, tado/zone/<n>/setpoint/set a room's
+ * setpoint (degrees C) and tado/zone/<n>/preset/set boost or none. Empty and
  * retained messages are ignored: an old command, or its clearing. */
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained);
 

@@ -20,6 +20,11 @@
 #define HA_PAIR_TOPIC   "tado/gateway/pair/set"
 #define HA_ONLINE       "online"
 #define HA_OFFLINE      "offline"
+/* Home or away, for the whole home: retained state, and the command. */
+#define HA_HOME_STATE_TOPIC "tado/home/state"
+#define HA_HOME_SET_TOPIC   "tado/home/set"
+#define HA_HOME             "home"
+#define HA_AWAY             "away"
 
 enum ha_entity {
     HA_TEMPERATURE,
@@ -35,12 +40,12 @@ enum ha_entity {
 #define HA_ZONE_FIRST HA_ZONE_TEMPERATURE
 #define HA_ZONE_LAST  HA_ZONE_CLIMATE
 
-/* Where Home Assistant sends a room's setpoint (degrees C, e.g. "21.5"):
- * the topic for a zone, the subscription for all, and the zone of a topic
- * (false for another topic). */
-#define HA_SETPOINT_TOPIC_FMT "tado/zone/%u/setpoint/set"
-#define HA_SETPOINT_TOPICS    "tado/zone/+/setpoint/set"
-bool ha_setpoint_topic(const char *topic, unsigned *zone);
+/* What Home Assistant sends a room: tado/zone/<n>/setpoint/set (degrees C,
+ * e.g. "21.5") and tado/zone/<n>/preset/set ("boost" or "none"). The
+ * subscription for all, and what a topic is, with its zone. */
+#define HA_ZONE_COMMANDS "tado/zone/+/+/set"
+enum ha_zone_command { HA_ZONE_NO_COMMAND, HA_ZONE_SETPOINT_SET, HA_ZONE_PRESET_SET };
+enum ha_zone_command ha_zone_command(const char *topic, unsigned *zone);
 /* What tado's own app offers. */
 #define HA_SETPOINT_MIN 500  /* centi-degrees C */
 #define HA_SETPOINT_MAX 2500
@@ -85,5 +90,8 @@ bool ha_device_discovery(char *topic, size_t tcap, char *payload, size_t pcap, c
                          enum ha_entity e);
 bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, const char *name,
                        enum ha_entity e);
+
+/* The Away switch of the whole home, on the gateway's own device. */
+bool ha_away_discovery(char *topic, size_t tcap, char *payload, size_t pcap);
 
 #endif

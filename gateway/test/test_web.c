@@ -6,15 +6,16 @@
 
 static void the_installation_survives_its_encoding(void)
 {
-    struct install in = {.n_rooms = 2, .n_devices = 2}, out;
-    in.rooms[0] = (struct install_room){.zone = 1, .setpoint = 1800, .name = "Living room"};
+    struct install in = {.away = true, .next_zone = 12, .n_rooms = 2, .n_devices = 2}, out;
+    in.rooms[0] = (struct install_room){.zone = 1, .setpoint = 1800, .away_setpoint = 1500, .name = "Living room"};
     in.rooms[1] = (struct install_room){.zone = 11, .setpoint = 2150, .name = "Bad\xc3\xa4kamer"}; /* UTF-8 */
     in.devices[0] = (struct install_device){.eui = {1, 2, 3, 4, 5, 0xc5, 0x1b, 0}, .zone = 1, .serial = "VA1234567890"};
     in.devices[1] = (struct install_device){.eui = {6, 7, 8, 9, 10, 0xc5, 0x1b, 0}, .zone = 0, .serial = ""};
     uint8_t blob[INSTALL_MAX_BLOB];
     size_t n = install_encode(&in, blob, sizeof blob);
     CHECK(n > 0 && install_decode(blob, n, &out));
-    CHECK(out.n_rooms == 2 && out.rooms[1].zone == 11 && out.rooms[1].setpoint == 2150);
+    CHECK(out.away && out.next_zone == 12 && out.n_rooms == 2 && out.rooms[1].zone == 11 && out.rooms[1].setpoint == 2150);
+    CHECK(out.rooms[0].away_setpoint == 1500 && out.rooms[1].away_setpoint == 0);
     CHECK(strcmp(out.rooms[0].name, "Living room") == 0 && strcmp(out.rooms[1].name, "Bad\xc3\xa4kamer") == 0);
     CHECK(out.n_devices == 2 && memcmp(out.devices[1].eui, in.devices[1].eui, 8) == 0);
     CHECK(out.devices[0].zone == 1 && strcmp(out.devices[0].serial, "VA1234567890") == 0 && !out.devices[1].serial[0]);

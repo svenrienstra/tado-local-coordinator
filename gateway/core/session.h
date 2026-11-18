@@ -58,6 +58,12 @@ enum session_pair_state {
     SESSION_PAIR_FAILED,
 };
 
+struct session_program {
+    bool away; /* the whole home is away */
+    bool on;
+    uint16_t setpoint; /* centi-degrees C, when on */
+};
+
 struct session_ops {
     void *ctx;
     /* Queues a frame and returns the CC1312's handle for it (0-255), or a
@@ -75,9 +81,10 @@ struct session_ops {
      * clock is not set, and the request goes unanswered (the device asks
      * again) rather than setting it to 1970. */
     uint32_t (*unix_time)(void *ctx);
-    /* The zone's own setpoint in centi-degrees C, kept by the caller: the one
-     * place it is set from (Home Assistant, the setup page) and saved. */
-    uint16_t (*setpoint)(void *ctx, uint8_t zone);
+    /* What the zone follows without an overlay, kept by the caller (the one
+     * place it is set and saved): at home its setpoint, in away its away
+     * temperature, or off. */
+    void (*program)(void *ctx, uint8_t zone, struct session_program *out);
     /* Optional. A report a device PUT or POSTed (d/<serial>/sen,
      * h/<home>/z/<n>/act, ...) that decoded, with its Uri-Path. Called before
      * its 2.04 goes out; it must not call back into the session. */
@@ -106,8 +113,10 @@ struct session_zone {
     bool used;
     uint8_t zone;
     uint8_t owner[8];
-    /* A setpoint set on the owner, which the zone follows until it ends. */
+    /* An overlay the zone follows until it ends: a setpoint set on the owner
+     * (TADO_OVERLAY_MANUAL) or a boost (TADO_OVERLAY_TIMER). */
     bool overlay;
+    uint8_t overlay_kind;
     uint16_t overlay_setpoint;
     /* Compared as elapsed time: any length < 2^32 ms; 0 lasts until changed. */
     uint32_t overlay_start_ms, overlay_for_ms;
@@ -163,12 +172,26 @@ void session_set_home(struct session *s, uint32_t home_id, uint32_t overlay_ms);
  * session_ops.setpoint). False when the zone table is full. */
 bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8]);
 
-/* The zone's setpoint changed (session_ops.setpoint has the new one): writes
- * the zone state to its owner in its next window, which ends an overlay set
- * on the device, and repeats it until the device ACKs. One write per zone
- * waits on the CC1312 at a time: a newer one replaces it and goes when that
- * frame left. False when the zone is not served. */
+/* Zone writes go to the zone's owner in its next window and are repeated
+ * until the device ACKs. One write per zone waits on the CC1312 at a time: a
+ * newer one replaces it and goes when that frame left. Each is false when the
+ * zone is not served. */
+
+/* The zone's setpoint changed (session_ops.program has it): writes the zone
+ * state, which also ends an overlay. */
 bool session_write_zone(struct session *s, uint8_t zone, uint32_t now_ms);
+
+/* The program changed under a running overlay or not (home and away, the
+ * away temperature): writes the zone state, keeping an overlay. changed: the
+ * zone's target moved, so a write without an overlay carries 6440. */
+bool session_restate_zone(struct session *s, uint8_t zone, bool changed, uint32_t now_ms);
+
+/* A boost: for_ms at setpoint (centi-C), then back to the program. */
+bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t for_ms, uint32_t now_ms);
+
+/* Ends the zone's overlay, a boost or one set on the device; false when it
+ * runs none. */
+bool session_end_overlay(struct session *s, uint8_t zone, uint32_t now_ms);
 
 /* The zone, or NULL when it is not served. */
 const struct session_zone *session_zone(const struct session *s, uint8_t zone);

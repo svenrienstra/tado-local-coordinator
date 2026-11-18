@@ -170,8 +170,10 @@ demand, named after the room. Each room is also a climate entity (heat only,
 5-25 C in 0.1 steps): its target, current temperature and action (heating or
 idle) come from `tado/zone/<n>/state`, so what the device reported; a new
 target goes to `tado/zone/<n>/setpoint/set`. `tado/gateway/pair/set` opens a
-pair window. Empty and retained commands are ignored: an old command again
-at every reconnect, or its clearing.
+pair window, `tado/home/set` takes `home` or `away` (an Away switch on the
+gateway's device), and `tado/zone/<n>/preset/set` takes `boost` or `none`
+(the climate entity's preset). Empty and retained commands are ignored: an
+old command again at every reconnect, or its clearing.
 
 - **Discovery:** for each zone, a retained config message on
   `homeassistant/climate/tado_zone_<n>/config`: one climate entity per room.
@@ -432,8 +434,22 @@ a burst of changes (a slider, an automation) costs the device one wake-up,
 with the newest value; the same value again wakes it only to end an overlay.
 A setpoint is saved to flash 30 s after the last change. The device's echo of the zone state is what Home
 Assistant shows. Tested on the Mac through the CC1312 firmware; the sensor
-took the same write on air (`SENSOR.md`). Boost and home/away: not started
-(freedo `PROTOCOL.md` on overlays and away first).
+took the same write on air (`SENSOR.md`).
+
+**Boost and home/away built (2026-11-18), not yet on hardware**, in the
+shapes freedo writes (`tools/golden` checks our blocks against freedo's
+builders byte for byte):
+- Home and away is one state of the whole home (`6160`), from the Away switch
+  in Home Assistant (`tado/home/set`) or the page. In away each room follows
+  its away temperature (`61e0=1 6200`), or is off (`61e0=0`, no `6200`) when
+  it has none. The switch restates every room; a write that moves a room's
+  target carries `6440=0001`, and an overlay running in a room is kept.
+- Boost is the room's climate preset: a timer overlay (`6240=3`) at 25 C for
+  30 minutes, kept by the gateway, then the return to the program without
+  `6440`; a cancel carries `6440`. A setpoint change also ends an overlay, as
+  a cancel.
+- Not covered by any capture: an overlay set while away, and how a VA02
+  answers a boost.
 
 ### M3.5 — Outages
 Prove the failure domains of 3.2 on a joined valve: WiFi and broker drops, an

@@ -197,6 +197,7 @@ static void save_install(struct gateway *g)
     static uint8_t blob[INSTALL_MAX_BLOB];
     memset(&in, 0, sizeof in);
     in.next_zone = g->next_zone;
+    in.away = g->away;
     for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
         const struct gateway_room *r = &g->rooms[i];
         if (!r->used)
@@ -204,6 +205,7 @@ static void save_install(struct gateway *g)
         struct install_room *o = &in.rooms[in.n_rooms++];
         o->zone = r->zone;
         o->setpoint = r->setpoint;
+        o->away_setpoint = r->away_setpoint;
         memcpy(o->name, r->name, sizeof o->name);
     }
     for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++) {
@@ -419,11 +421,19 @@ static uint32_t session_unix(void *ctx)
     return g->ops.unix_time(g->ops.ctx);
 }
 
-/* The room keeps the setpoint: the session serves and writes what it says. */
-static uint16_t session_setpoint(void *ctx, uint8_t zone)
+/* What the room follows: the session serves and writes what this says. */
+static struct session_program program_of(const struct gateway *g, const struct gateway_room *r)
 {
-    const struct gateway_room *r = gateway_room(ctx, zone);
-    return r ? r->setpoint : SESSION_DEFAULT_SETPOINT;
+    if (!g->away)
+        return (struct session_program){.on = true, .setpoint = r->setpoint};
+    return (struct session_program){.away = true, .on = r->away_setpoint != 0, .setpoint = r->away_setpoint};
+}
+
+static void session_program(void *ctx, uint8_t zone, struct session_program *out)
+{
+    struct gateway *g = ctx;
+    const struct gateway_room *r = gateway_room(g, zone);
+    *out = r ? program_of(g, r) : (struct session_program){.on = true, .setpoint = SESSION_DEFAULT_SETPOINT};
 }
 
 /* Learns the device's serial from its requests, and whether it waits for a
@@ -500,7 +510,7 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
                             .log = session_log,
                             .rng = session_rng,
                             .unix_time = session_unix,
-                            .setpoint = session_setpoint,
+                            .program = session_program,
                             .on_report = session_report,
                             .on_request = session_request,
                             .on_joined = session_joined};
@@ -511,6 +521,7 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
         r->used = true;
         r->zone = in->rooms[i].zone;
         r->setpoint = in->rooms[i].setpoint;
+        r->away_setpoint = in->rooms[i].away_setpoint;
         memcpy(r->name, in->rooms[i].name, sizeof r->name);
     }
     for (size_t i = 0; i < in->n_devices && i < INSTALL_MAX_DEVICES; i++) {
@@ -521,6 +532,7 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
         memcpy(d->d.serial, in->devices[i].serial, sizeof d->d.serial);
     }
     g->next_zone = in->next_zone;
+    g->away = in->away;
     sync_session(g);
 }
 
@@ -582,6 +594,13 @@ bool gateway_delete_room(struct gateway *g, uint8_t zone)
     return true;
 }
 
+/* Saved once the changes stop: a slider or an automation sends many. */
+static void save_soon(struct gateway *g)
+{
+    g->save_pending = true;
+    g->save_due_ms = now(g) + GATEWAY_SAVE_DELAY_MS;
+}
+
 bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
 {
     struct gateway_room *r = gateway_room(g, zone);
@@ -592,9 +611,7 @@ bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
         return true; /* the device has it already: no wake-up for nothing */
     if (r->setpoint != centi) {
         r->setpoint = centi;
-        /* Saved once the changes stop: a slider or an automation sends many. */
-        g->save_pending = true;
-        g->save_due_ms = now(g) + GATEWAY_SAVE_DELAY_MS;
+        save_soon(g);
     }
     /* Also when unchanged, to end an overlay set on the device. The device
      * confirms it: its next report echoes the zone state. */
@@ -602,6 +619,67 @@ bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
     notice(g, "room %s: setpoint %u.%02u C%s", r->name, centi / 100u, centi % 100u,
            written ? "" : " (no device yet: it gets it when it joins the room)");
     return true;
+}
+
+static void publish_home(struct gateway *g)
+{
+    g->ops.publish(g->ops.ctx, HA_HOME_STATE_TOPIC, g->away ? HA_AWAY : HA_HOME, true);
+}
+
+void gateway_set_away(struct gateway *g, bool away)
+{
+    if (g->away == away)
+        return;
+    struct session_program before[INSTALL_MAX_ROOMS];
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++)
+        before[i] = program_of(g, &g->rooms[i]);
+    g->away = away;
+    save_soon(g);
+    notice(g, "the home is %s", away ? "away" : "home");
+    publish_home(g);
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
+        const struct gateway_room *r = &g->rooms[i];
+        if (!r->used)
+            continue;
+        struct session_program after = program_of(g, r);
+        bool changed = after.on != before[i].on || (after.on && after.setpoint != before[i].setpoint);
+        session_restate_zone(&g->session, r->zone, changed, now(g));
+    }
+}
+
+bool gateway_set_away_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
+{
+    struct gateway_room *r = gateway_room(g, zone);
+    if (!r || (centi != 0 && !ha_setpoint_ok(centi)))
+        return false;
+    if (r->away_setpoint == centi)
+        return true;
+    r->away_setpoint = centi;
+    save_soon(g);
+    if (g->away)
+        session_restate_zone(&g->session, zone, true, now(g));
+    return true;
+}
+
+bool gateway_boost(struct gateway *g, uint8_t zone, bool on)
+{
+    struct gateway_room *r = gateway_room(g, zone);
+    if (!r)
+        return false;
+    bool done = on ? session_boost(&g->session, zone, GATEWAY_BOOST_SETPOINT, GATEWAY_BOOST_MS, now(g))
+                   : gateway_boost_left(g, zone) && session_end_overlay(&g->session, zone, now(g));
+    if (done)
+        notice(g, "room %s: boost %s", r->name, on ? "for 30 min" : "ended");
+    return done;
+}
+
+uint32_t gateway_boost_left(struct gateway *g, uint8_t zone)
+{
+    const struct session_zone *z = session_zone(&g->session, zone);
+    if (!z || !z->overlay || z->overlay_kind != TADO_OVERLAY_TIMER)
+        return 0;
+    uint32_t ran = now(g) - z->overlay_start_ms;
+    return ran < z->overlay_for_ms ? (z->overlay_for_ms - ran + 999) / 1000 : 0;
 }
 
 bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone)
@@ -736,17 +814,40 @@ void gateway_command(struct gateway *g, const char *topic, const char *payload, 
         gateway_pair(g, GATEWAY_PAIR_WINDOW_S);
         return;
     }
+    bool is_home = len == strlen(HA_HOME) && memcmp(payload, HA_HOME, len) == 0;
+    bool is_away = len == strlen(HA_AWAY) && memcmp(payload, HA_AWAY, len) == 0;
+    if (strcmp(topic, HA_HOME_SET_TOPIC) == 0) {
+        if (is_home || is_away)
+            gateway_set_away(g, is_away);
+        else
+            notice(g, "home state refused: %.*s", (int)(len < 16 ? len : 16), payload);
+        return;
+    }
     unsigned zone;
-    if (ha_setpoint_topic(topic, &zone)) {
+    switch (ha_zone_command(topic, &zone)) {
+    case HA_ZONE_SETPOINT_SET: {
         int32_t c = ha_parse_centi(payload, len);
         if (c < 0 || !gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c))
             notice(g, "setpoint for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);
+        break;
+    }
+    case HA_ZONE_PRESET_SET: {
+        bool boost = len == 5 && memcmp(payload, "boost", 5) == 0, none = len == 4 && memcmp(payload, "none", 4) == 0;
+        if (!(boost || none) || !gateway_boost(g, (uint8_t)zone, boost))
+            notice(g, "preset for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);
+        break;
+    }
+    case HA_ZONE_NO_COMMAND:
+        break;
     }
 }
 
 void gateway_announce(struct gateway *g)
 {
     g->ops.publish(g->ops.ctx, HA_STATUS_TOPIC, HA_ONLINE, true);
+    if (ha_away_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload))
+        publish(g);
+    publish_home(g);
     for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++) {
         g->devices[i].discovered = 0;
         g->devices[i].dirty = true;

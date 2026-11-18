@@ -11,7 +11,8 @@
  * to us, each in a room or in none (docs/PLAN.md 3.8, 3.9).
  *
  * Encoded as version 1, little-endian:
- *   01 | next_zone | n_rooms | (zone, setpoint u16, name_len, name)... |
+ *   01 | flags (bit 0: away) | next_zone | n_rooms |
+ *   (zone, setpoint u16, away_setpoint u16, name_len, name)... |
  *   n_devices | (eui[8], zone, serial_len, serial)...
  * A room's zone is 1-255, a device's 0 when it is in no room. */
 
@@ -21,11 +22,12 @@
 #define INSTALL_SERIAL_MAX  15
 #define INSTALL_VERSION     1
 #define INSTALL_MAX_BLOB \
-    (4 + INSTALL_MAX_ROOMS * (4 + INSTALL_NAME_MAX) + INSTALL_MAX_DEVICES * (10 + INSTALL_SERIAL_MAX))
+    (5 + INSTALL_MAX_ROOMS * (6 + INSTALL_NAME_MAX) + INSTALL_MAX_DEVICES * (10 + INSTALL_SERIAL_MAX))
 
 struct install_room {
     uint8_t zone;
-    uint16_t setpoint; /* centi-degrees C */
+    uint16_t setpoint;      /* centi-degrees C, at home */
+    uint16_t away_setpoint; /* in away; 0: off */
     char name[INSTALL_NAME_MAX + 1];
 };
 
@@ -36,6 +38,7 @@ struct install_device {
 };
 
 struct install {
+    bool away;          /* the whole home */
     uint8_t next_zone; /* where a new room's number is looked for (gateway.h) */
     size_t n_rooms;
     struct install_room rooms[INSTALL_MAX_ROOMS];

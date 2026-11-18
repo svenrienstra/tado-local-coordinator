@@ -117,6 +117,11 @@ in its next window, as one from Home Assistant's climate entity does
 (`tado/zone/<n>/setpoint/set`). The tile's status line shows what the device
 confirmed.
 
+Home or Away (top of the page, or the Away switch in Home Assistant) is for
+the whole home: in away each room follows its away temperature (the moon
+button; empty means off in away). The bolt button boosts a room to 25 °C
+for 30 minutes, as the climate entity's boost preset does.
+
 Moving a device that already took a room's config reaches it only at its
 next config read: forcing that (a config write or `d/reboot`) is M4. Progress
 also goes to `tado/gateway/log`; `tado/gateway/pair/set` opens a pair window

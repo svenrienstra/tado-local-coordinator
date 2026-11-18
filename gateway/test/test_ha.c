@@ -94,16 +94,19 @@ static void a_room_is_a_climate_entity(void)
     CHECK(ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, "Living", HA_ZONE_CLIMATE));
     CHECK(strcmp(topic, "homeassistant/climate/tado_zone_11/config") == 0);
     CHECK(strcmp(payload,
-                 "{\"name\":null,\"unique_id\":\"tado_zone_11_climate\",\"modes\":[\"heat\"],"
-                 "\"mode_state_topic\":\"tado/zone/11/state\",\"mode_state_template\":\"heat\","
-                 "\"temperature_command_topic\":\"tado/zone/11/setpoint/set\","
+                 "{\"~\":\"tado/zone/11\",\"name\":null,\"unique_id\":\"tado_zone_11_climate\",\"modes\":[\"heat\"],"
+                 "\"mode_state_topic\":\"~/state\",\"mode_state_template\":\"heat\","
+                 "\"temperature_command_topic\":\"~/setpoint/set\","
                  "\"temperature_command_template\":\"{{ '%.1f' | format(value) }}\","
-                 "\"temperature_state_topic\":\"tado/zone/11/state\","
+                 "\"temperature_state_topic\":\"~/state\","
                  "\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\","
-                 "\"current_temperature_topic\":\"tado/zone/11/state\","
+                 "\"current_temperature_topic\":\"~/state\","
                  "\"current_temperature_template\":\"{{ value_json.temperature | default('None') }}\","
-                 "\"action_topic\":\"tado/zone/11/state\","
+                 "\"action_topic\":\"~/state\","
                  "\"action_template\":\"{{ 'heating' if value_json.demand | default(0) > 0 else 'idle' }}\","
+                 "\"preset_modes\":[\"boost\"],\"preset_mode_command_topic\":\"~/preset/set\","
+                 "\"preset_mode_state_topic\":\"~/state\","
+                 "\"preset_mode_value_template\":\"{{ 'boost' if value_json.boost | default(false) else 'none' }}\","
                  "\"min_temp\":5,\"max_temp\":25,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\","
                  "\"availability_topic\":\"tado/gateway/status\","
                  "\"device\":{\"identifiers\":[\"tado_zone_11\"],\"name\":\"Living\",\"manufacturer\":\"tado\"}}") == 0);
@@ -133,23 +136,41 @@ static void reads_a_setpoint(void)
     CHECK(ha_parse_centi("", 0) == -1);
 }
 
-/* The topic Home Assistant sends a setpoint to, back to its zone. */
-static void reads_a_setpoint_topic(void)
+/* What Home Assistant sends a room, back to the room and the command. */
+static void reads_a_zone_command_topic(void)
 {
     unsigned zone;
-    char topic[40];
-    snprintf(topic, sizeof topic, HA_SETPOINT_TOPIC_FMT, 11u);
-    CHECK(ha_setpoint_topic(topic, &zone) && zone == 11);
-    CHECK(!ha_setpoint_topic("tado/zone/11/setpoint/set/x", &zone));
-    CHECK(!ha_setpoint_topic("tado/zone/0/setpoint/set", &zone));
-    CHECK(!ha_setpoint_topic("tado/zone/256/setpoint/set", &zone));
-    CHECK(!ha_setpoint_topic("tado/zone/1234/setpoint/set", &zone));
-    CHECK(!ha_setpoint_topic("tado/gateway/pair/set", &zone));
+    CHECK(ha_zone_command("tado/zone/11/setpoint/set", &zone) == HA_ZONE_SETPOINT_SET && zone == 11);
+    CHECK(ha_zone_command("tado/zone/3/preset/set", &zone) == HA_ZONE_PRESET_SET && zone == 3);
+    CHECK(ha_zone_command("tado/zone/11/setpoint/set/x", &zone) == HA_ZONE_NO_COMMAND);
+    CHECK(ha_zone_command("tado/zone/11/state", &zone) == HA_ZONE_NO_COMMAND);
+    CHECK(ha_zone_command("tado/zone/0/setpoint/set", &zone) == HA_ZONE_NO_COMMAND);
+    CHECK(ha_zone_command("tado/zone/256/setpoint/set", &zone) == HA_ZONE_NO_COMMAND);
+    CHECK(ha_zone_command("tado/zone/1234/setpoint/set", &zone) == HA_ZONE_NO_COMMAND);
+    CHECK(ha_zone_command("tado/gateway/pair/set", &zone) == HA_ZONE_NO_COMMAND);
+}
+
+/* The whole home's Away switch, and a boost as the device reports it. */
+static void away_and_boost(void)
+{
+    char topic[96], payload[1024];
+    CHECK(ha_away_discovery(topic, sizeof topic, payload, sizeof payload));
+    CHECK(strcmp(topic, "homeassistant/switch/tado_gateway/away/config") == 0);
+    CHECK(strstr(payload, "\"command_topic\":\"tado/home/set\"") && strstr(payload, "\"payload_on\":\"away\""));
+    CHECK(strstr(payload, "\"identifiers\":[\"tado_gateway\"]"));
+
+    struct tado_report z = {.fields = TADO_SETPOINT | TADO_OVERLAY | TADO_OVERLAY_SETPOINT, .setpoint = 2000,
+                            .overlay = TADO_OVERLAY_TIMER, .overlay_setpoint = 2500};
+    char out[128];
+    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":25.00,\"boost\":true}") == 0);
+    z.overlay = TADO_OVERLAY_MANUAL;
+    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":25.00}") == 0);
 }
 
 void run_ha_tests(void)
 {
-    reads_a_setpoint_topic();
+    reads_a_zone_command_topic();
+    away_and_boost();
     a_room_is_a_climate_entity();
     reads_a_setpoint();
     a_discovery_config_byte_for_byte();

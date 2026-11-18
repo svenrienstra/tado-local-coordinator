@@ -115,11 +115,16 @@ uint32_t ha_zone_entities(const struct tado_report *z)
     return e | 1u << HA_ZONE_CLIMATE;
 }
 
-bool ha_setpoint_topic(const char *topic, unsigned *zone)
+enum ha_zone_command ha_zone_command(const char *topic, unsigned *zone)
 {
     int end = 0;
-    return sscanf(topic, "tado/zone/%3u/setpoint/set%n", zone, &end) == 1 && end > 0 && topic[end] == '\0' &&
-           *zone >= 1 && *zone <= 255;
+    if (sscanf(topic, "tado/zone/%3u/%n", zone, &end) != 1 || end == 0 || *zone < 1 || *zone > 255)
+        return HA_ZONE_NO_COMMAND;
+    if (strcmp(topic + end, "setpoint/set") == 0)
+        return HA_ZONE_SETPOINT_SET;
+    if (strcmp(topic + end, "preset/set") == 0)
+        return HA_ZONE_PRESET_SET;
+    return HA_ZONE_NO_COMMAND;
 }
 
 int32_t ha_parse_centi(const char *s, size_t len)
@@ -195,6 +200,8 @@ size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z)
         put_fixed(&o, "setpoint", c, 2);
     if (z->fields & TADO_DEMAND)
         put_fixed(&o, "demand", z->demand, 0);
+    if ((z->fields & TADO_OVERLAY) && z->overlay == TADO_OVERLAY_TIMER)
+        put(&o, "%s\"boost\":true", o.len > 1 ? "," : "");
     put(&o, "}");
     return done(&o);
 }
@@ -228,26 +235,39 @@ static const struct entity ENTITIES[] = {
  * come from the room's state, which holds what the device reported, so Home
  * Assistant shows the setpoint the device took, not the one asked for. A key
  * the device has not reported yet reads as None (unknown). */
-static void put_climate(struct out *o, unsigned zone, const char *uid, const char *state_topic, const char *device)
+static void put_climate(struct out *o, unsigned zone, const char *uid, const char *device)
 {
-    char set[40];
-    snprintf(set, sizeof set, HA_SETPOINT_TOPIC_FMT, zone);
-    put(o, "{\"name\":null,\"unique_id\":\"%s_climate\",\"modes\":[\"heat\"],", uid);
+    /* ~ is the zone's base topic in each of the topics below. */
+    put(o, "{\"~\":\"tado/zone/%u\",\"name\":null,\"unique_id\":\"%s_climate\",\"modes\":[\"heat\"],", zone, uid);
     /* Its only mode, or Home Assistant shows it as off. */
-    put(o, "\"mode_state_topic\":\"%s\",\"mode_state_template\":\"heat\",", state_topic);
+    put(o, "\"mode_state_topic\":\"~/state\",\"mode_state_template\":\"heat\",");
     /* One decimal, not a float as Python prints it (20.200000000000003). */
-    put(o, "\"temperature_command_topic\":\"%s\",\"temperature_command_template\":\"{{ '%%.1f' | format(value) }}\",", set);
-    put(o, "\"temperature_state_topic\":\"%s\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",",
-        state_topic);
-    put(o, "\"current_temperature_topic\":\"%s\",\"current_temperature_template\":"
-           "\"{{ value_json.temperature | default('None') }}\",",
-        state_topic);
-    put(o, "\"action_topic\":\"%s\",\"action_template\":"
-           "\"{{ 'heating' if value_json.demand | default(0) > 0 else 'idle' }}\",",
-        state_topic);
+    put(o, "\"temperature_command_topic\":\"~/setpoint/set\",\"temperature_command_template\":\"{{ '%%.1f' | format(value) }}\",");
+    put(o, "\"temperature_state_topic\":\"~/state\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",");
+    put(o, "\"current_temperature_topic\":\"~/state\",\"current_temperature_template\":"
+           "\"{{ value_json.temperature | default('None') }}\",");
+    put(o, "\"action_topic\":\"~/state\",\"action_template\":"
+           "\"{{ 'heating' if value_json.demand | default(0) > 0 else 'idle' }}\",");
+    /* Boost: 25 C for 30 minutes, as the device reported it (6240=3). */
+    put(o, "\"preset_modes\":[\"boost\"],\"preset_mode_command_topic\":\"~/preset/set\","
+           "\"preset_mode_state_topic\":\"~/state\",\"preset_mode_value_template\":"
+           "\"{{ 'boost' if value_json.boost | default(false) else 'none' }}\",");
     put(o, "\"min_temp\":%u,\"max_temp\":%u,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\",",
         HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
     put(o, "\"availability_topic\":\"" HA_STATUS_TOPIC "\",\"device\":%s}", device);
+}
+
+bool ha_away_discovery(char *topic, size_t tcap, char *payload, size_t pcap)
+{
+    struct out t = {topic, tcap, 0, false}, p = {payload, pcap, 0, false};
+    put(&t, "homeassistant/switch/tado_gateway/away/config");
+    put(&p, "{\"name\":\"Away\",\"unique_id\":\"tado_gateway_away\",\"icon\":\"mdi:home-export-outline\","
+            "\"state_topic\":\"" HA_HOME_STATE_TOPIC "\",\"command_topic\":\"" HA_HOME_SET_TOPIC "\","
+            "\"payload_on\":\"" HA_AWAY "\",\"payload_off\":\"" HA_HOME "\",\"state_on\":\"" HA_AWAY "\","
+            "\"state_off\":\"" HA_HOME "\",\"availability_topic\":\"" HA_STATUS_TOPIC "\","
+            "\"device\":{\"identifiers\":[\"tado_gateway\"],\"name\":\"tado gateway\","
+            "\"manufacturer\":\"tado-coordinator\"}}");
+    return done(&t) && done(&p);
 }
 
 /* The parts every sensor config shares; device is the "device" object. */
@@ -316,7 +336,7 @@ bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, uns
     struct out t = {topic, tcap, 0, false}, p = {payload, pcap, 0, false};
     if (e == HA_ZONE_CLIMATE) {
         put(&t, "homeassistant/climate/%s/config", uid);
-        put_climate(&p, zone, uid, state, device);
+        put_climate(&p, zone, uid, device);
     } else {
         put(&t, "homeassistant/sensor/%s/%s/config", uid, ENTITIES[e].key);
         put_sensor(&p, &ENTITIES[e], uid, state, device);

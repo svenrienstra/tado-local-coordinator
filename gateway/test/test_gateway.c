@@ -572,7 +572,8 @@ static void a_paired_device_waits_for_a_room_then_takes_it(void)
     CHECK_BYTES(answer.payload, answer.payload_len, want, wn);
 
     CHECK(web("GET", "/api/state", "", out, sizeof out) == 200);
-    CHECK(strstr(out, "\"rooms\":[{\"zone\":1,\"name\":\"Living room\",\"setpoint\":1800,\"state\":{}}]"));
+    CHECK(strstr(out, "\"rooms\":[{\"zone\":1,\"name\":\"Living room\",\"setpoint\":1800,\"away_setpoint\":0,"
+                     "\"boost_left\":0,\"state\":{}}]"));
     CHECK(strstr(out, "{\"eui\":\"0bb1cefa07c51b00\",\"serial\":\"SU2922080256\",\"zone\":1,\"waiting\":false,"));
     CHECK(strstr(out, "\"pair\":{\"state\":\"joined\",\"left\":0,\"joined\":\"0bb1cefa07c51b00\"}"));
 
@@ -768,12 +769,83 @@ static void the_same_setpoint_again_only_ends_an_overlay(void)
     gateway_command(&gw, "tado/zone/11/setpoint/set", "18", 2, false);
     CHECK(a_job_within(jobs_before));
     struct coap_msg write;
-    uint8_t want[64];
-    size_t wn = tado_zone_state(want, sizeof want, 1800, -1);
+    uint8_t want[64]; /* the overlay's end, a cancel: with 6440 */
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){.on = true, .setpoint = 1800, .marker = true});
     CHECK(radio_job_coap(network_key(), &write) && coap_path_is(&write, "z/s"));
     CHECK_BYTES(write.payload, write.payload_len, want, wn);
     run_past_save();
     CHECK(install_saves == saves); /* unchanged: nothing to save */
+}
+
+/* Away from Home Assistant: each room is written with its away temperature
+ * (or off), the state goes to Home Assistant, and it is kept in flash. */
+static void the_home_goes_away_and_comes_back(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    start(&id);
+    run(3);
+    n_published = 0;
+    gateway_announce(&gw);
+    CHECK(last_on("homeassistant/switch/tado_gateway/away/config") != NULL);
+    CHECK(strcmp(last_on(HA_HOME_STATE_TOPIC), "home") == 0);
+
+    static char out[4096];
+    CHECK(web("POST", "/api/rooms/11", "away_setpoint=15", out, sizeof out) == 200);
+    CHECK(web("POST", "/api/rooms/11", "away_setpoint=30", out, sizeof out) == 400);
+    CHECK(gateway_room(&gw, 11)->away_setpoint == 1500);
+    int jobs_before = jobs;
+    gateway_command(&gw, HA_HOME_SET_TOPIC, "elsewhere", 9, false);
+    gateway_command(&gw, HA_HOME_SET_TOPIC, "away", 4, true); /* retained: old */
+    CHECK(!gw.away && logged("home state refused"));
+    gateway_command(&gw, HA_HOME_SET_TOPIC, "away", 4, false);
+    CHECK(gw.away && strcmp(last_on(HA_HOME_STATE_TOPIC), "away") == 0);
+    CHECK(a_job_within(jobs_before));
+    struct coap_msg write;
+    uint8_t want[64];
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){.away = true, .on = true,
+                                                                             .setpoint = 1500, .marker = true});
+    CHECK(radio_job_coap(network_key(), &write) && coap_path_is(&write, "z/s"));
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+    run_past_save();
+    CHECK(saved.away && saved.rooms[0].away_setpoint == 1500);
+
+    CHECK(web("POST", "/api/home", "away=0", out, sizeof out) == 200 && !gw.away);
+    CHECK(web("POST", "/api/home", "away=maybe", out, sizeof out) == 400);
+    CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, "\"away\":false"));
+}
+
+/* Boost from Home Assistant's preset, and its end: no device, no boost. */
+static void a_boost_from_home_assistant(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    uint8_t zone_without = 0;
+    start(&id);
+    run(3);
+    zone_without = gateway_add_room(&gw, "Empty");
+    CHECK(!gateway_boost(&gw, zone_without, true));
+
+    int jobs_before = jobs;
+    gateway_command(&gw, "tado/zone/11/preset/set", "boost", 5, false);
+    CHECK(a_job_within(jobs_before));
+    struct coap_msg write;
+    uint8_t want[64];
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){
+        .on = true, .setpoint = 1800, .overlay = TADO_OVERLAY_TIMER, .overlay_on = true, .overlay_setpoint = 2500,
+        .marker = true});
+    CHECK(radio_job_coap(network_key(), &write) && coap_path_is(&write, "z/s"));
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+    uint32_t left = gateway_boost_left(&gw, 11);
+    CHECK(left > 1790 && left <= 1800);
+    static char out[4096];
+    char want_left[32];
+    snprintf(want_left, sizeof want_left, "\"boost_left\":%lu", (unsigned long)left);
+    CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, want_left));
+
+    gateway_command(&gw, "tado/zone/11/preset/set", "eco", 3, false);
+    CHECK(logged("preset for zone 11 refused"));
+    CHECK(web("POST", "/api/rooms/11", "boost=0", out, sizeof out) == 200);
+    CHECK(gateway_boost_left(&gw, 11) == 0);
+    CHECK(web("POST", "/api/rooms/11", "boost=0", out, sizeof out) == 409); /* none runs */
 }
 
 /* A window that ends while d/pair is out does not cut the join short, and a
@@ -857,6 +929,8 @@ void run_gateway_tests(void)
     no_pair_window_with_the_device_table_full();
     a_setpoint_from_home_assistant_reaches_the_device();
     the_same_setpoint_again_only_ends_an_overlay();
+    the_home_goes_away_and_comes_back();
+    a_boost_from_home_assistant();
     a_join_under_way_outlasts_its_window();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();

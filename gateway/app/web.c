@@ -57,9 +57,9 @@ static const char *pair_state(enum gateway_pair_state s)
 static void put_state(struct gateway *g, struct out *o)
 {
     char e[17];
-    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"setpoint_min\":%u,\"setpoint_max\":%u,",
+    put(o, "{\"cc1312\":%s,\"clock\":%s,\"home\":%lu,\"away\":%s,\"setpoint_min\":%u,\"setpoint_max\":%u,",
         g->configured ? "true" : "false", g->ops.unix_time(g->ops.ctx) ? "true" : "false",
-        (unsigned long)g->id.home_id, HA_SETPOINT_MIN, HA_SETPOINT_MAX);
+        (unsigned long)g->id.home_id, g->away ? "true" : "false", HA_SETPOINT_MIN, HA_SETPOINT_MAX);
     put(o, "\"pair\":{\"state\":\"%s\",\"left\":%lu", pair_state(g->pair), (unsigned long)gateway_pair_left(g));
     if (g->pair == GATEWAY_PAIR_JOINED)
         put(o, ",\"joined\":\"%s\"", eui_str(g->pair_joined, e));
@@ -69,8 +69,9 @@ static void put_state(struct gateway *g, struct out *o)
         const struct gateway_room *r = &g->rooms[i];
         if (!r->used)
             continue;
-        put(o, "%s{\"zone\":%u,\"name\":\"%s\",\"setpoint\":%u,\"state\":", first ? "" : ",", r->zone, r->name,
-            r->setpoint);
+        put(o, "%s{\"zone\":%u,\"name\":\"%s\",\"setpoint\":%u,\"away_setpoint\":%u,\"boost_left\":%lu,\"state\":",
+            first ? "" : ",", r->zone, r->name, r->setpoint, r->away_setpoint,
+            (unsigned long)gateway_boost_left(g, r->zone));
         if (!o->full)
             wrote(o, ha_zone_state(o->buf + o->len, o->cap - o->len, &r->r));
         put(o, "}");
@@ -158,26 +159,42 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
         gateway_delete_room(g, (uint8_t)zone);
     } else if (*rest == '\0') {
         /* Both checked before either changes anything. */
-        char value[32];
+        char value[32], away[32], boost[4];
         enum web_field setpoint = web_form(body, len, "setpoint", value, sizeof value);
+        enum web_field away_field = web_form(body, len, "away_setpoint", away, sizeof away);
+        enum web_field boost_field = web_form(body, len, "boost", boost, sizeof boost);
         int32_t c = setpoint == WEB_FIELD_OK ? ha_parse_centi(value, strlen(value)) : 0;
+        /* "off" (or 0): off in away. */
+        int32_t a = away_field != WEB_FIELD_OK ? 0 : strcmp(away, "off") == 0 ? 0 : ha_parse_centi(away, strlen(away));
         if (named == WEB_FIELD_OK && !install_name_ok(name, strlen(name)))
             named = WEB_FIELD_BAD;
         if (setpoint == WEB_FIELD_OK && !ha_setpoint_ok(c))
             setpoint = WEB_FIELD_BAD;
-        if (named == WEB_FIELD_MISSING && setpoint == WEB_FIELD_MISSING)
-            return answer(o, 400, "name or setpoint required");
+        if (away_field == WEB_FIELD_OK && a != 0 && !ha_setpoint_ok(a))
+            away_field = WEB_FIELD_BAD;
+        if (boost_field == WEB_FIELD_OK && strcmp(boost, "1") != 0 && strcmp(boost, "0") != 0)
+            boost_field = WEB_FIELD_BAD;
+        if (named == WEB_FIELD_MISSING && setpoint == WEB_FIELD_MISSING && away_field == WEB_FIELD_MISSING &&
+            boost_field == WEB_FIELD_MISSING)
+            return answer(o, 400, "name, setpoint, away_setpoint or boost required");
         if (named == WEB_FIELD_BAD)
             return answer(o, 400, "bad name");
-        if (setpoint == WEB_FIELD_BAD) {
-            char error[48];
-            snprintf(error, sizeof error, "setpoint: %u-%u degrees C", HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
+        if (setpoint == WEB_FIELD_BAD || away_field == WEB_FIELD_BAD) {
+            char error[64];
+            snprintf(error, sizeof error, "%s: %u-%u degrees C", setpoint == WEB_FIELD_BAD ? "setpoint" : "away_setpoint",
+                     HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
             return answer(o, 400, error);
         }
+        if (boost_field == WEB_FIELD_BAD)
+            return answer(o, 400, "boost: 1 or 0");
         if (named == WEB_FIELD_OK)
             gateway_rename_room(g, (uint8_t)zone, name);
         if (setpoint == WEB_FIELD_OK)
             gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c);
+        if (away_field == WEB_FIELD_OK)
+            gateway_set_away_setpoint(g, (uint8_t)zone, (uint16_t)a);
+        if (boost_field == WEB_FIELD_OK && !gateway_boost(g, (uint8_t)zone, boost[0] == '1'))
+            return answer(o, 409, boost[0] == '1' ? "boost: the room has no device" : "boost: none runs");
     } else {
         return answer(o, 404, "not found");
     }
@@ -218,6 +235,14 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
     }
     if (strcmp(path, "/api/pair/close") == 0) {
         gateway_close_pair(g);
+        return ok(&o);
+    }
+    if (strcmp(path, "/api/home") == 0) {
+        char away[4];
+        if (web_form(body, body_len, "away", away, sizeof away) != WEB_FIELD_OK ||
+            (strcmp(away, "1") != 0 && strcmp(away, "0") != 0))
+            return answer(&o, 400, "away: 1 or 0");
+        gateway_set_away(g, away[0] == '1');
         return ok(&o);
     }
     if (strncmp(path, "/api/rooms", 10) == 0)

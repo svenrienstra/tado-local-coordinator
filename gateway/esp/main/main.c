@@ -248,7 +248,8 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         ESP_LOGI(TAG, "mqtt connected");
         atomic_store(&mqtt_up, true);
         esp_mqtt_client_subscribe(mqtt, HA_PAIR_TOPIC, 1);
-        esp_mqtt_client_subscribe(mqtt, HA_SETPOINT_TOPICS, 1);
+        esp_mqtt_client_subscribe(mqtt, HA_ZONE_COMMANDS, 1);
+        esp_mqtt_client_subscribe(mqtt, HA_HOME_SET_TOPIC, 1);
         c.kind = COMMAND_ANNOUNCE;
         xQueueSend(commands, &c, 0);
         break;
