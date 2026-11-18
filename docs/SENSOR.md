@@ -63,7 +63,11 @@ them (`../reference/freedo/tado/emu.go` `servedConfigGet`, `build_resources.go`,
    `8400`/`6040`=`<sensor>/z/p`, PID 1000/500/1500, `60e0`=1, `62c0`/`6380`=900;
    URIs `coap://[fe80:0:0:0:<EUI-64, U/L bit flipped>]/z/<res>`). Asked for in
    128-byte blocks, it **took 64-byte ones**: it asked for blocks 1, 2 and 3 in
-   turn and stopped at the last. That keeps every block in one frame.
+   turn and stopped at the last. That keeps every block in one frame. It keeps
+   SZX 3 in every request and counts NUM in our 64-byte blocks (Block2 `03 13
+   23 33`), so NUM is served as it comes; scaling it as RFC 7959 2.4 reads
+   (block 1 of 128 = our block 2) made it start over every few seconds
+   (2026-11-18).
 3. Then `PUT d/<serial>/err` (`01a3`=0) and `d/<serial>/fallback` (`0182`=0),
    as a valve reports after a new config, and **`GET h/<home>/z/11/s`**, the
    zone state: we answer `6160`=1 `6180`=0 `6020`=1 `61e0`=1 `6200`=<setpoint>

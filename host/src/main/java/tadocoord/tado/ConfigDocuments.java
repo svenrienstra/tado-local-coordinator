@@ -166,8 +166,10 @@ public final class ConfigDocuments {
         int block = request.options().stream().filter(o -> o.number() == BLOCK2).findFirst()
                 .map(o -> unsigned(o.value())).orElse(MAX_SZX);
         int szx = Math.min(block & 7, MAX_SZX);
-        // RFC 7959 2.4: in smaller blocks, the asked block starts at our block NUM << (size step).
-        int num = (block >>> 4) << ((block & 7) - szx);
+        // The sensor keeps asking with SZX 3 but numbers the blocks in the 64-byte size we answer
+        // (03 13 23 33 for a 226-byte document, captured 2026-11-17), so NUM is ours as it comes.
+        // Scaling it as RFC 7959 2.4 reads (block 1 of 128 = our block 2) made it start over.
+        int num = block >>> 4;
         Optional<byte[]> held = request.options().stream().filter(o -> o.number() == ETAG)
                 .map(Option::value).findFirst();
         List<Option> options = new ArrayList<>();

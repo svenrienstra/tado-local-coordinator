@@ -225,8 +225,11 @@ size_t tado_block_answer(uint8_t *out, size_t cap, const struct coap_msg *reques
     unsigned asked = block & 7, szx = asked < TADO_MAX_SZX ? asked : TADO_MAX_SZX;
     if (asked == 7)
         return 0; /* reserved block size */
-    /* RFC 7959 2.4: in smaller blocks, the asked block starts at our block NUM << (size step). */
-    uint32_t num = (block >> 4) << (asked - szx);
+    /* The sensor keeps asking with SZX 3 but numbers the blocks in the 64-byte
+     * size we answer (03 13 23 33 for a 226-byte document, captured
+     * 2026-11-17), so NUM is ours as it comes. Scaling it as RFC 7959 2.4
+     * reads (block 1 of 128 = our block 2) made it start over. */
+    uint32_t num = block >> 4;
     const struct coap_option *held = coap_find(request, COAP_OPT_ETAG);
 
     struct coap_msg m = {.type = COAP_ACK, .mid = request->mid, .tkl = request->tkl};

@@ -43,8 +43,9 @@ class HostVectorsTest {
         put("doc.etag_zone", ConfigDocuments.etag(zone));
         put("doc.session_id", tadocoord.join.JoinSessionAccess.sessionId(device));
 
-        // GET h/4242/z/11/config in turn: block 0 asked at 128, block 1 at 64, block 1 at 128
-        // (scaled to our 64), the last block, and block 0 with the ETag held.
+        // GET h/4242/z/11/config in turn: block 0 asked at 128, block 1 asked at 64, block 1
+        // asked at 128 as the sensor does (NUM counts our 64-byte blocks), the last block, and
+        // block 0 with the ETag held.
         int[][] blocks = {{0x0201, 0x03}, {0x0202, 0x12}, {0x0203, 0x13}, {0x0204, 0x32}};
         for (int i = 0; i < blocks.length; i++) {
             CoapMessage get = zoneGet(blocks[i][0], blocks[i][1], null);

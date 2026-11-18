@@ -39,8 +39,9 @@ class ConfigDocumentsTest {
 
         ByteArrayOutputStream joined = new ByteArrayOutputStream();
         for (int num = 0; ; num++) {
-            // The device asks for 128-byte blocks; block n of 64 follows its first answer.
-            int asked = num == 0 ? 0x03 : num << 4 | 2;
+            // As the sensor asks (03 13 23 33, captured 2026-11-17): SZX 3 throughout, NUM
+            // counting the 64-byte blocks we answer with.
+            int asked = num << 4 | 3;
             CoapMessage answer = answerTo(get(asked, null), doc);
             assertEquals(CoapMessage.code(2, 5), answer.code());
             int block = unsigned(option(answer, ConfigDocuments.BLOCK2));
@@ -52,17 +53,6 @@ class ConfigDocumentsTest {
             }
         }
         assertArrayEquals(doc, joined.toByteArray());
-    }
-
-    @Test
-    void aLaterBlockAskedInTheLargerSizeStartsWhereThatBlockStarts() {
-        byte[] doc = ConfigDocuments.zoneWithOwner(sensor);
-        CoapMessage answer = answerTo(get(1 << 4 | 3, null), doc); // block 1 of 128: bytes 128..
-
-        int block = unsigned(option(answer, ConfigDocuments.BLOCK2));
-        assertEquals(2, block >>> 4); // block 2 of 64
-        assertEquals(2, block & 7);
-        assertArrayEquals(java.util.Arrays.copyOfRange(doc, 128, Math.min(192, doc.length)), answer.payload());
     }
 
     @Test

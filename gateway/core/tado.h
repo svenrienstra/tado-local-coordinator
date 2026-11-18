@@ -84,8 +84,9 @@ bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r);
 void tado_etag(const uint8_t *doc, size_t len, uint8_t out[TADO_ETAG_LEN]);
 
 /* The answer to a GET of doc: 2.03 with the ETag when the request holds it for
- * block 0, else 2.05 with the ETag and the block asked for, at most 64 bytes
- * (a block asked in a larger size is scaled, RFC 7959 2.4). */
+ * block 0, else 2.05 with the ETag and the block asked for, at most 64 bytes.
+ * NUM counts 64-byte blocks whatever size the device asks in, as the sensor
+ * numbers them. */
 size_t tado_block_answer(uint8_t *out, size_t cap, const struct coap_msg *request, const uint8_t *doc,
                          size_t doc_len, const struct lowpan_datagram *from, const uint8_t coordinator[8],
                          const uint8_t device[8]);
