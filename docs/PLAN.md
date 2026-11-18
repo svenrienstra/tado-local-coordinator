@@ -478,6 +478,30 @@ the ESP's flash, heap and CPU headroom. Then all rooms, hot water,
 persistence across power loss (3.2), frame-counter floor across reboots (3.5),
 airtime budget under realistic load (3.6).
 
+**The wall thermostat's interface module id** (tag `015d`), from freedo issue
+#37 and freedo `PROTOCOL.md` ("interface module"). The id selects the boiler
+interface the thermostat runs; a full factory reset writes it to 0, and the
+thermostat then never drives the boiler. 112 (the valves' value) and `7fff`
+stop it as well. Our plant is a **Vaillant ecoTEC plus on eBUS**, the same as
+the issue's, where the id is **80 (`ebus_a`)**; freedo's table puts 0, 1, 5-9,
+83 and 200 in that family too, so the thermostat's own report decides.
+- Move the thermostat with the pairing reset, not the full factory reset (the
+  issue suggests it keeps the id; not confirmed), and keep the tado bridge
+  until the boiler runs from the gateway: re-running tado's installation
+  assistant restored the id there.
+- Learn the id from `h/<home>/hvac/codes`, keep it per device in flash (a new
+  install record), and serve it in the thermostat's `d/config` only when it is
+  known and in freedo's valid table; never send `015d` otherwise (a body
+  without it keeps the thermostat's own).
+- Set it on the setup page for a thermostat that lost it, with the same check;
+  a later `hvac/codes` report wins, with a warning. Warn on the page and in
+  Home Assistant when a thermostat has no id or no boiler report after some
+  minutes.
+- Answer a thermostat's `d/config` before it has a room: it holds back every
+  report after `d/config`, `hvac/codes` included, until that is answered.
+- Serve the thermostat's shape of the document: no `021a`, no `0149`, `0158`
+  `0000`.
+
 ### M5 — Home Assistant polish  *(optional / later)*
 Pairing and device removal from Home Assistant, more device features (battery,
 window state, child lock), whether schedules should move into the gateway, and
