@@ -673,6 +673,55 @@ static void no_pair_window_with_the_device_table_full(void)
     CHECK(web("POST", "/api/pair", "", out, sizeof out) == 409 && strstr(out, "table is full"));
 }
 
+/* M3: a setpoint from Home Assistant, as its climate entity sends it, goes to
+ * the room's device in its window and is kept in flash; the device's echo is
+ * what Home Assistant then shows. */
+static void a_setpoint_from_home_assistant_reaches_the_device(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    start(&id);
+    run(3);
+    CHECK(last_on("homeassistant/climate/tado_zone_11/config") != NULL);
+
+    /* Refused: out of range, not a number, a room that does not exist, and an
+     * old retained command again at reconnect. */
+    int jobs_before = jobs;
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "30", 2, false);
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "warm", 4, false);
+    gateway_command(&gw, "tado/zone/12/setpoint/set", "21", 2, false);
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "21", 2, true);
+    gateway_command(&gw, "tado/zone/11/setpoint/set/x", "21", 2, false);
+    run(50);
+    CHECK(jobs == jobs_before && gateway_room(&gw, 11)->setpoint == 1800 && logged("refused"));
+
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "21.5", 4, false);
+    CHECK(gateway_room(&gw, 11)->setpoint == 2150 && saved.rooms[0].setpoint == 2150);
+    for (int i = 0; i < 200 && jobs == jobs_before; i++)
+        run(1); /* on the device's channel sample */
+    struct coap_msg write;
+    CHECK(radio_job_coap(network_key(), &write) && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
+    uint8_t want[64];
+    size_t wn = tado_zone_state(want, sizeof want, 2150, -1);
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+
+    /* The device's echo, as the sensor sends it after a write. */
+    uint8_t echo[64];
+    size_t en = tado_zone_state(echo, sizeof echo, 2150, -1);
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3401, .payload = echo, .payload_len = en};
+    coap_add_path(&put, "z/s");
+    device_sends_coap(&put, 0x72, 0x3000);
+    run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"setpoint\":21.50"));
+
+    /* The page sets it the same way. */
+    static char out[256];
+    CHECK(web("POST", "/api/rooms/11", "setpoint=19", out, sizeof out) == 200);
+    CHECK(gateway_room(&gw, 11)->setpoint == 1900);
+    CHECK(web("POST", "/api/rooms/11", "setpoint=26", out, sizeof out) == 400);
+    restart_from_flash();
+    CHECK(gateway_room(&gw, 11)->setpoint == 1900);
+}
+
 /* A window that ends while d/pair is out does not cut the join short, and a
  * second window does not take it over. */
 static void a_join_under_way_outlasts_its_window(void)
@@ -752,6 +801,7 @@ void run_gateway_tests(void)
     rooms_and_devices_on_the_setup_page();
     room_numbers_come_round_after_255();
     no_pair_window_with_the_device_table_full();
+    a_setpoint_from_home_assistant_reaches_the_device();
     a_join_under_way_outlasts_its_window();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();

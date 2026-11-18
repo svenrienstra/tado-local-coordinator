@@ -139,6 +139,12 @@ uint8_t gateway_add_room(struct gateway *g, const char *name);
 bool gateway_rename_room(struct gateway *g, uint8_t zone, const char *name);
 bool gateway_delete_room(struct gateway *g, uint8_t zone);
 
+/* Sets the room's setpoint (centi-degrees C, HA_SETPOINT_MIN..MAX), keeps it,
+ * and writes it to the room's device in its next window; that ends an
+ * overlay set on the device. The device's next report confirms it. False
+ * for no such room or a setpoint out of range. */
+bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
+
 /* Puts a joined device in a room (zone 0: none). One device per room until
  * zones get members (PLAN.md M4): false when the room has another device,
  * or there is no such room or device. The device takes it at its next config
@@ -148,8 +154,9 @@ bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone);
 struct gateway_device *gateway_device(struct gateway *g, const uint8_t eui[8]);
 struct gateway_room *gateway_room(struct gateway *g, uint8_t zone);
 
-/* An MQTT message for the gateway: a message on tado/gateway/pair/set opens
- * a window, unless it is empty or retained (an old command or its clearing). */
+/* An MQTT message for the gateway: tado/gateway/pair/set opens a pair window,
+ * tado/zone/<n>/setpoint/set sets a room's setpoint (degrees C). Empty and
+ * retained messages are ignored: an old command, or its clearing. */
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained);
 
 /* After MQTT (re)connects: discovery and state of everything known again. */

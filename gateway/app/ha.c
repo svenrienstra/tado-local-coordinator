@@ -112,7 +112,27 @@ uint32_t ha_zone_entities(const struct tado_report *z)
         e |= 1u << HA_ZONE_SETPOINT;
     if (z->fields & TADO_DEMAND)
         e |= 1u << HA_ZONE_DEMAND;
-    return e;
+    return e | 1u << HA_ZONE_CLIMATE;
+}
+
+/* Degrees C with at most two decimals ("21", "21.5", "21.25") in centi-C;
+ * -1 for anything else. */
+int32_t ha_parse_centi(const char *s, size_t len)
+{
+    while (len && (*s == ' ' || *s == '\n' || *s == '\r'))
+        s++, len--;
+    while (len && (s[len - 1] == ' ' || s[len - 1] == '\n' || s[len - 1] == '\r'))
+        len--;
+    int32_t whole = 0, frac = 0;
+    size_t i = 0, digits = 0, decimals = 0;
+    for (; i < len && s[i] >= '0' && s[i] <= '9' && digits < 3; i++, digits++)
+        whole = whole * 10 + (s[i] - '0');
+    if (i < len && s[i] == '.')
+        for (i++; i < len && s[i] >= '0' && s[i] <= '9' && decimals < 2; i++, decimals++)
+            frac = frac * 10 + (s[i] - '0');
+    if (digits == 0 || i != len)
+        return -1;
+    return whole * 100 + (decimals == 1 ? frac * 10 : frac);
 }
 
 size_t ha_device_state_topic(char *out, size_t cap, const char *serial)
@@ -192,7 +212,31 @@ static const struct entity ENTITIES[] = {
     [HA_ZONE_TEMPERATURE] = {"temperature", "Temperature", "temperature", DEGREES_C, true, false, NULL},
     [HA_ZONE_SETPOINT] = {"setpoint", "Setpoint", "temperature", DEGREES_C, true, false, NULL},
     [HA_ZONE_DEMAND] = {"demand", "Heating demand", NULL, "%", true, false, "mdi:radiator"},
+    [HA_ZONE_CLIMATE] = {"climate", NULL, NULL, NULL, false, false, NULL},
 };
+
+/* A thermostat for the room. Target and current temperature and the action
+ * come from the room's state, which holds what the device reported, so Home
+ * Assistant shows the setpoint the device took, not the one asked for. A key
+ * the device has not reported yet reads as None (unknown). */
+static void put_climate(struct out *o, unsigned zone, const char *uid, const char *state_topic, const char *device)
+{
+    char set[40];
+    snprintf(set, sizeof set, HA_SETPOINT_TOPIC_FMT, zone);
+    put(o, "{\"name\":null,\"unique_id\":\"%s_climate\",\"modes\":[\"heat\"],", uid);
+    put(o, "\"temperature_command_topic\":\"%s\",", set);
+    put(o, "\"temperature_state_topic\":\"%s\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",",
+        state_topic);
+    put(o, "\"current_temperature_topic\":\"%s\",\"current_temperature_template\":"
+           "\"{{ value_json.temperature | default('None') }}\",",
+        state_topic);
+    put(o, "\"action_topic\":\"%s\",\"action_template\":"
+           "\"{{ 'heating' if value_json.demand | default(0) > 0 else 'idle' }}\",",
+        state_topic);
+    put(o, "\"min_temp\":%u,\"max_temp\":%u,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\",",
+        HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
+    put(o, "\"availability_topic\":\"" HA_STATUS_TOPIC "\",\"device\":%s}", device);
+}
 
 /* The parts every sensor config shares; device is the "device" object. */
 static void put_sensor(struct out *o, const struct entity *e, const char *uid, const char *state_topic,
@@ -248,7 +292,7 @@ bool ha_device_discovery(char *topic, size_t tcap, char *payload, size_t pcap, c
 bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, const char *name,
                        enum ha_entity e)
 {
-    if (e < HA_ZONE_TEMPERATURE || e > HA_ZONE_DEMAND)
+    if (e < HA_ZONE_TEMPERATURE || e > HA_ZONE_CLIMATE)
         return false;
     char uid[24], state[32], device[160];
     snprintf(uid, sizeof uid, "tado_zone_%u", zone);
@@ -258,7 +302,12 @@ bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, uns
     if (n < 0 || (size_t)n >= sizeof device)
         return false;
     struct out t = {topic, tcap, 0, false}, p = {payload, pcap, 0, false};
-    put(&t, "homeassistant/sensor/%s/%s/config", uid, ENTITIES[e].key);
-    put_sensor(&p, &ENTITIES[e], uid, state, device);
+    if (e == HA_ZONE_CLIMATE) {
+        put(&t, "homeassistant/climate/%s/config", uid);
+        put_climate(&p, zone, uid, state, device);
+    } else {
+        put(&t, "homeassistant/sensor/%s/%s/config", uid, ENTITIES[e].key);
+        put_sensor(&p, &ENTITIES[e], uid, state, device);
+    }
     return done(&t) && done(&p);
 }

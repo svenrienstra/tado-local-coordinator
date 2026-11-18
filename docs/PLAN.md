@@ -163,12 +163,15 @@ short trains for synchronised devices, batch writes).
 A first sketch; fixed in M2/M3. Home Assistant controls **rooms (zones, 3.8)**,
 not single valves.
 
-As built in M2 (`gateway/app/ha.c`): sensors only, each published (discovery,
-retained) once it has a value: per device temperature, humidity, battery (V),
-signal and last seen; per zone temperature, setpoint and heating demand,
-named after the room. `tado/gateway/pair/set` opens a pair window (any
-message that is not empty or retained), as the setup page does (3.9). The climate entity and
-`tado/zone/<n>/setpoint/set` come with M3.
+As built in M2 and M3 (`gateway/app/ha.c`): sensors, each published
+(discovery, retained) once it has a value: per device temperature, humidity,
+battery (V), signal and last seen; per zone temperature, setpoint and heating
+demand, named after the room. Each room is also a climate entity (heat only,
+5-25 C in 0.1 steps): its target, current temperature and action (heating or
+idle) come from `tado/zone/<n>/state`, so what the device reported; a new
+target goes to `tado/zone/<n>/setpoint/set`. `tado/gateway/pair/set` opens a
+pair window. Empty and retained commands are ignored: an old command again
+at every reconnect, or its clearing.
 
 - **Discovery:** for each zone, a retained config message on
   `homeassistant/climate/tado_zone_<n>/config`: one climate entity per room.
@@ -418,6 +421,16 @@ sensor again, to the ESP's own key, and assigns it a room on the page.
 One zone with one valve: a setpoint from Home Assistant over MQTT reaches the
 valve in its CSL window and is confirmed by its next report. Then boost and
 home/away.
+
+**Setpoint built (2026-11-18), not yet on hardware:** the room keeps its
+setpoint (in flash, the one copy; the session asks for it), and a new one, from
+the climate entity or the setup page, goes to the room's device as `PUT
+z/s?id=<n>` on its channel sample, repeated until it is ACKed (`2.04`, or
+`2.05` as a VA01 answers, freedo `PROTOCOL.md`). That write also ends an
+overlay set on the device. The device's echo of the zone state is what Home
+Assistant shows. Tested on the Mac through the CC1312 firmware; the sensor
+took the same write on air (`SENSOR.md`). Boost and home/away: not started
+(freedo `PROTOCOL.md` on overlays and away first).
 
 ### M3.5 — Outages
 Prove the failure domains of 3.2 on a joined valve: WiFi and broker drops, an

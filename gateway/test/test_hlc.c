@@ -280,11 +280,18 @@ static uint32_t sess_unix(void *ctx)
     return 1793966400u;
 }
 
+static uint16_t sess_setpoint(void *ctx, uint8_t zone)
+{
+    (void)ctx, (void)zone;
+    return SESSION_DEFAULT_SETPOINT;
+}
+
 static void a_report_goes_end_to_end_through_the_firmware(void)
 {
     reset();
     CHECK(configure());
-    static const struct session_ops ops = {.tx = sess_tx, .log = sess_log, .rng = sess_rng, .unix_time = sess_unix};
+    static const struct session_ops ops = {
+        .tx = sess_tx, .log = sess_log, .rng = sess_rng, .unix_time = sess_unix, .setpoint = sess_setpoint};
     session_init(&sess, V("in.coord_eui")->data, V("in.network_key")->data, &ops, now);
 
     /* The device's PUT z/p, as it seals it. */

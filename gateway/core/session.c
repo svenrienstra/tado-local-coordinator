@@ -94,7 +94,7 @@ void session_set_home(struct session *s, uint32_t home_id, uint32_t overlay_ms)
     s->overlay_ms = overlay_ms;
 }
 
-bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], uint16_t setpoint)
+bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8])
 {
     struct session_zone *z = zone_find(s, zone);
     for (size_t i = 0; !z && i < SESSION_MAX_ZONES; i++)
@@ -106,7 +106,6 @@ bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], u
     z->used = true;
     z->zone = zone;
     memcpy(z->owner, owner, 8);
-    z->setpoint = setpoint;
     return true;
 }
 
@@ -338,6 +337,11 @@ static struct session_zone *zone_path(struct session *s, const struct path *p, c
     return zone >= 0 && zone <= 0xff ? zone_find(s, (unsigned)zone) : NULL;
 }
 
+static uint16_t setpoint_of(struct session *s, const struct session_zone *z)
+{
+    return s->ops.setpoint(s->ops.ctx, z->zone);
+}
+
 static bool overlay_over(const struct session_zone *z, uint32_t now)
 {
     return z->overlay_for_ms != 0 && elapsed(now, z->overlay_start_ms, z->overlay_for_ms);
@@ -367,7 +371,7 @@ static size_t document_for(struct session *s, const uint8_t device[8], const str
     if (z && seg_is(leaf, "config"))
         return tado_zone_with_owner(s->doc, sizeof s->doc, z->owner);
     if (z && seg_is(leaf, "s"))
-        return tado_zone_state(s->doc, sizeof s->doc, z->setpoint, overlay_of(z, now));
+        return tado_zone_state(s->doc, sizeof s->doc, setpoint_of(s, z), overlay_of(z, now));
     return 0;
 }
 
@@ -419,6 +423,32 @@ static void send_zone_write(struct session *s, struct session_zone *z, uint32_t 
     send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
 }
 
+/* Writes the zone's own state, with no overlay, to its owner: a write that
+ * is still unacknowledged is replaced, under a new MID. */
+static void write_zone(struct session *s, struct session_zone *z, uint32_t now)
+{
+    uint8_t state[64];
+    size_t sn = tado_zone_state(state, sizeof state, setpoint_of(s, z), -1);
+    z->overlay = false;
+    z->write_mid = s->next_mid++;
+    z->write_len = (uint8_t)tado_zone_state_write(z->write_packet, sizeof z->write_packet, z->zone, state, sn,
+                                                  z->write_mid, s->coordinator, z->owner);
+    z->writing = true;
+    z->write_attempts = 0;
+    send_zone_write(s, z, now);
+}
+
+bool session_write_zone(struct session *s, uint8_t zone, uint32_t now)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (!z)
+        return false;
+    uint16_t c = setpoint_of(s, z);
+    say(s, "zone %u: setpoint %u.%02u C, writing it to its owner", zone, c / 100u, c % 100u);
+    write_zone(s, z, now);
+    return true;
+}
+
 /* Ends each overlay whose time is up and tells its device, which would else
  * hold it until its next read. */
 static void end_overlays(struct session *s, uint32_t now)
@@ -427,17 +457,9 @@ static void end_overlays(struct session *s, uint32_t now)
         struct session_zone *z = &s->zones[i];
         if (!z->used || !z->overlay || !overlay_over(z, now))
             continue;
-        z->overlay = false;
-        say(s, "zone %u: the device's overlay ran out, back to %u.%02u C", z->zone, z->setpoint / 100u,
-             z->setpoint % 100u);
-        uint8_t state[64];
-        size_t sn = tado_zone_state(state, sizeof state, z->setpoint, -1);
-        z->write_mid = s->next_mid++;
-        z->write_len = (uint8_t)tado_zone_state_write(z->write_packet, sizeof z->write_packet, z->zone, state, sn,
-                                                      z->write_mid, s->coordinator, z->owner);
-        z->writing = true;
-        z->write_attempts = 0;
-        send_zone_write(s, z, now);
+        uint16_t c = setpoint_of(s, z);
+        say(s, "zone %u: the device's overlay ran out, back to %u.%02u C", z->zone, c / 100u, c % 100u);
+        write_zone(s, z, now);
     }
 }
 

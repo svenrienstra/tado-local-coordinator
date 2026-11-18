@@ -47,7 +47,7 @@ no frames itself.
 | File | What |
 |---|---|
 | `gwlink` | the host link over a byte stream: blocking requests (a `TX` returns the CC1312's handle, `HL_BUSY` retried every 100 ms for 8 s), events that arrive meanwhile queued with their own copy of the bytes |
-| `gateway` | configures the CC1312, and again whenever it rebooted (a `boot` line after our `CONFIG`, or a `TX` refused as not configured); frame counters in blocks of 65536, the floor in flash moved on before the CC1312 gets near it; the carrier the CC1312 retunes to; rooms and joined devices: pair first, then put the device in a room, whose zone is served from then on (one device per room until M4); reports out to MQTT |
+| `gateway` | configures the CC1312, and again whenever it rebooted (a `boot` line after our `CONFIG`, or a `TX` refused as not configured); frame counters in blocks of 65536, the floor in flash moved on before the CC1312 gets near it; the carrier the CC1312 retunes to; rooms and joined devices: pair first, then put the device in a room, whose zone is served from then on (one device per room until M4); each room's setpoint, written to its device; reports out to MQTT, commands in |
 | `install` | rooms and devices as they are kept in flash |
 | `web` | the setup page's JSON API (routes in `web.h`), form bodies, HTTP Basic |
 | `ha` | Home Assistant topics and payloads: retained state per device and zone (named after its room), a discovery config per sensor once it has a value |
@@ -112,6 +112,11 @@ As in the tado app, a device is paired first and then put in a room:
 3. Add a room, and pick it in the device's room list. The gateway answers the
    device's next config request with that room's zone.
 
+Each room tile has a setpoint (5-25 °C); a change goes to the room's device
+in its next window, as one from Home Assistant's climate entity does
+(`tado/zone/<n>/setpoint/set`). The tile's status line shows what the device
+confirmed.
+
 Moving a device that already took a room's config reaches it only at its
 next config read: forcing that (a config write or `d/reboot`) is M4. Progress
 also goes to `tado/gateway/log`; `tado/gateway/pair/set` opens a pair window
@@ -141,6 +146,7 @@ the device table (16) is full.
   API, then answered with that room's zone, and the rooms back after a
   restart; rooms renamed and deleted; the sensor's report out as Home
   Assistant messages.
-- `test/test_ha.c`: discovery configs and state payloads byte for byte.
+- `test/test_ha.c`: discovery configs (sensors and the climate entity) and
+  state payloads byte for byte; setpoints as Home Assistant sends them.
 - `test/test_web.c`: the installation's encoding, room names, form bodies and
   HTTP Basic.

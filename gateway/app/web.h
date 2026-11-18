@@ -13,7 +13,8 @@
  *   POST /api/pair                    opens a pair window
  *   POST /api/pair/close
  *   POST /api/rooms                   name=<name>: a new room
- *   POST /api/rooms/<zone>            name=<name>: renames it
+ *   POST /api/rooms/<zone>            name=<name>: renames it;
+ *                                     setpoint=<C>: sets its setpoint
  *   POST /api/rooms/<zone>/delete     its devices go to no room
  *   POST /api/devices/<eui>           zone=<zone>: puts it in a room, 0: none
  *

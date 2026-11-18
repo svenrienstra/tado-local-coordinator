@@ -75,6 +75,9 @@ struct session_ops {
      * clock is not set, and the request goes unanswered (the device asks
      * again) rather than setting it to 1970. */
     uint32_t (*unix_time)(void *ctx);
+    /* The zone's own setpoint in centi-degrees C, kept by the caller: the one
+     * place it is set from (Home Assistant, the setup page) and saved. */
+    uint16_t (*setpoint)(void *ctx, uint8_t zone);
     /* Optional. A report a device PUT or POSTed (d/<serial>/sen,
      * h/<home>/z/<n>/act, ...) that decoded, with its Uri-Path. Called before
      * its 2.04 goes out; it must not call back into the session. */
@@ -103,7 +106,6 @@ struct session_zone {
     bool used;
     uint8_t zone;
     uint8_t owner[8];
-    uint16_t setpoint;              /* centi-degrees C */
     /* A setpoint set on the owner, which the zone follows until it ends. */
     bool overlay;
     uint16_t overlay_setpoint;
@@ -155,9 +157,15 @@ void session_init(struct session *s, const uint8_t coordinator[8], const uint8_t
  * on a device lasts (0: until changed). */
 void session_set_home(struct session *s, uint32_t home_id, uint32_t overlay_ms);
 
-/* Makes owner the zone's owner and measuring device, at setpoint (centi-C).
- * False when the zone table is full. */
-bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], uint16_t setpoint);
+/* Makes owner the zone's owner and measuring device (its setpoint comes from
+ * session_ops.setpoint). False when the zone table is full. */
+bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8]);
+
+/* The zone's setpoint changed (session_ops.setpoint has the new one): writes
+ * the zone state to its owner in its next window, which ends an overlay set
+ * on the device, and repeats it until the device ACKs. False when the zone is
+ * not served. */
+bool session_write_zone(struct session *s, uint8_t zone, uint32_t now_ms);
 
 /* The zone, or NULL when it is not served. */
 const struct session_zone *session_zone(const struct session *s, uint8_t zone);

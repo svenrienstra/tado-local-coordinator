@@ -238,7 +238,7 @@ static void sync_session(struct gateway *g)
         if (owner ? z && memcmp(z->owner, owner->eui, 8) == 0 : !z)
             continue;
         if (owner)
-            session_set_zone(&g->session, r->zone, owner->eui, r->setpoint);
+            session_set_zone(&g->session, r->zone, owner->eui);
         else
             session_drop_zone(&g->session, r->zone);
         /* Another device measures the room, or none: start its values afresh,
@@ -271,7 +271,7 @@ static void publish_device(struct gateway *g, struct gateway_device *dev)
 static void publish_room(struct gateway *g, struct gateway_room *room)
 {
     uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
-    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_DEMAND; e++)
+    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_CLIMATE; e++)
         if ((fresh & 1u << e) && ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload,
                                                    room->zone, room->name, e))
             publish(g);
@@ -285,7 +285,7 @@ static void publish_room(struct gateway *g, struct gateway_room *room)
  * messages, for every entity, as after a restart nothing says which went out. */
 static void unpublish_room(struct gateway *g, struct gateway_room *room)
 {
-    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_DEMAND; e++)
+    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_CLIMATE; e++)
         if (ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload, room->zone, room->name, e)) {
             g->payload[0] = '\0';
             publish(g);
@@ -418,6 +418,13 @@ static uint32_t session_unix(void *ctx)
     return g->ops.unix_time(g->ops.ctx);
 }
 
+/* The room keeps the setpoint: the session serves and writes what it says. */
+static uint16_t session_setpoint(void *ctx, uint8_t zone)
+{
+    const struct gateway_room *r = gateway_room(ctx, zone);
+    return r ? r->setpoint : SESSION_DEFAULT_SETPOINT;
+}
+
 /* Learns the device's serial from its requests, and whether it waits for a
  * room: its config request goes unanswered until it has one. */
 static void session_request(void *ctx, const uint8_t device[8], uint8_t code, const char *path, bool answered)
@@ -492,6 +499,7 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
                             .log = session_log,
                             .rng = session_rng,
                             .unix_time = session_unix,
+                            .setpoint = session_setpoint,
                             .on_report = session_report,
                             .on_request = session_request,
                             .on_joined = session_joined};
@@ -569,6 +577,20 @@ bool gateway_delete_room(struct gateway *g, uint8_t zone)
     r->used = false;
     sync_session(g);
     save_install(g);
+    return true;
+}
+
+bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
+{
+    struct gateway_room *r = gateway_room(g, zone);
+    if (!r || centi < HA_SETPOINT_MIN || centi > HA_SETPOINT_MAX)
+        return false;
+    r->setpoint = centi;
+    save_install(g);
+    /* The device confirms it: its next report echoes the zone state. */
+    bool written = session_write_zone(&g->session, zone, now(g));
+    notice(g, "room %s: setpoint %u.%02u C%s", r->name, centi / 100u, centi % 100u,
+           written ? "" : " (no device yet: it gets it when it joins the room)");
     return true;
 }
 
@@ -694,11 +716,22 @@ void gateway_run(struct gateway *g, uint32_t timeout_ms)
 
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained)
 {
-    (void)payload;
     /* A retained message is an old command again on every reconnect, and an
      * empty one is how a retained one is cleared: neither is a command. */
-    if (strcmp(topic, HA_PAIR_TOPIC) == 0 && len > 0 && !retained)
+    if (len == 0 || retained)
+        return;
+    if (strcmp(topic, HA_PAIR_TOPIC) == 0) {
         gateway_pair(g, GATEWAY_PAIR_WINDOW_S);
+        return;
+    }
+    unsigned zone;
+    int end = 0;
+    if (sscanf(topic, "tado/zone/%3u/setpoint/set%n", &zone, &end) == 1 && end > 0 && topic[end] == '\0' &&
+        zone <= 255) {
+        int32_t c = ha_parse_centi(payload, len);
+        if (c < 0 || !gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c))
+            notice(g, "setpoint for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);
+    }
 }
 
 void gateway_announce(struct gateway *g)

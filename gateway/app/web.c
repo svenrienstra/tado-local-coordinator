@@ -156,8 +156,15 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
     if (strcmp(rest, "/delete") == 0) {
         gateway_delete_room(g, (uint8_t)zone);
     } else if (*rest == '\0') {
-        if (!named || !gateway_rename_room(g, (uint8_t)zone, name))
+        char value[16];
+        bool setpoint = web_form(body, len, "setpoint", value, sizeof value);
+        if (!named && !setpoint)
+            return answer(o, 400, "name or setpoint required");
+        if (named && !gateway_rename_room(g, (uint8_t)zone, name))
             return answer(o, 400, "bad name");
+        int32_t c = setpoint ? ha_parse_centi(value, strlen(value)) : 0;
+        if (setpoint && (c < 0 || !gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c)))
+            return answer(o, 400, "setpoint: 5-25 degrees C");
     } else {
         return answer(o, 404, "not found");
     }

@@ -30,7 +30,14 @@ enum ha_entity {
     HA_ZONE_TEMPERATURE,
     HA_ZONE_SETPOINT,
     HA_ZONE_DEMAND,
+    HA_ZONE_CLIMATE, /* the room's thermostat: set its setpoint from Home Assistant */
 };
+
+/* Where Home Assistant sends a room's setpoint (degrees C, e.g. "21.5"). */
+#define HA_SETPOINT_TOPIC_FMT "tado/zone/%u/setpoint/set"
+/* What tado's own app offers. */
+#define HA_SETPOINT_MIN 500  /* centi-degrees C */
+#define HA_SETPOINT_MAX 2500
 
 /* What the gateway knows of a device: every report merged, newest wins. */
 struct ha_device {
@@ -41,13 +48,19 @@ struct ha_device {
     uint32_t last_seen;      /* Unix seconds, 0 when the clock was not set */
 };
 
+/* A setpoint as Home Assistant and the page send it: degrees C with at most
+ * two decimals ("21", "21.5", "21.25"), spaces around allowed; centi-C, or
+ * -1 for anything else. */
+int32_t ha_parse_centi(const char *s, size_t len);
+
 /* A serial as it may go into a topic: 4-15 letters and digits. */
 bool ha_serial_ok(const char *serial, size_t len);
 
 /* Copies the fields present in from into into. */
 void ha_merge(struct tado_report *into, const struct tado_report *from);
 
-/* The entities that have a value: bits of 1u << enum ha_entity. */
+/* The entities that have a value (a room's climate entity always): bits of
+ * 1u << enum ha_entity. */
 uint32_t ha_device_entities(const struct ha_device *d);
 uint32_t ha_zone_entities(const struct tado_report *zone);
 

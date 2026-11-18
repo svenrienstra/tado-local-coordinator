@@ -82,11 +82,51 @@ static void a_zone_shows_the_setpoint_it_heats_to(void)
                             .zone_temperature = 1875};
     ha_merge(&z, &m);
     CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"temperature\":18.75,\"setpoint\":21.00}") == 0);
-    CHECK(ha_zone_entities(&z) == (1u << HA_ZONE_TEMPERATURE | 1u << HA_ZONE_SETPOINT));
+    CHECK(ha_zone_entities(&z) == (1u << HA_ZONE_TEMPERATURE | 1u << HA_ZONE_SETPOINT | 1u << HA_ZONE_CLIMATE));
+}
+
+/* The room's thermostat: what it shows comes from the room's state, what is
+ * set goes to tado/zone/<n>/setpoint/set. */
+static void a_room_is_a_climate_entity(void)
+{
+    char topic[96], payload[1024];
+    CHECK(ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, "Living", HA_ZONE_CLIMATE));
+    CHECK(strcmp(topic, "homeassistant/climate/tado_zone_11/config") == 0);
+    CHECK(strcmp(payload,
+                 "{\"name\":null,\"unique_id\":\"tado_zone_11_climate\",\"modes\":[\"heat\"],"
+                 "\"temperature_command_topic\":\"tado/zone/11/setpoint/set\","
+                 "\"temperature_state_topic\":\"tado/zone/11/state\","
+                 "\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\","
+                 "\"current_temperature_topic\":\"tado/zone/11/state\","
+                 "\"current_temperature_template\":\"{{ value_json.temperature | default('None') }}\","
+                 "\"action_topic\":\"tado/zone/11/state\","
+                 "\"action_template\":\"{{ 'heating' if value_json.demand | default(0) > 0 else 'idle' }}\","
+                 "\"min_temp\":5,\"max_temp\":25,\"temp_step\":0.1,\"precision\":0.1,\"temperature_unit\":\"C\","
+                 "\"availability_topic\":\"tado/gateway/status\","
+                 "\"device\":{\"identifiers\":[\"tado_zone_11\"],\"name\":\"Living\",\"manufacturer\":\"tado\"}}") == 0);
+    struct tado_report none = {0};
+    CHECK(ha_zone_entities(&none) == 1u << HA_ZONE_CLIMATE); /* from the start */
+}
+
+/* What Home Assistant sends (temp_step 0.1) and people type on the page. */
+static void reads_a_setpoint(void)
+{
+    CHECK(ha_parse_centi("21", 2) == 2100);
+    CHECK(ha_parse_centi("21.5", 4) == 2150);
+    CHECK(ha_parse_centi("21.25", 5) == 2125);
+    CHECK(ha_parse_centi(" 7.0\n", 5) == 700);
+    CHECK(ha_parse_centi("21.255", 6) == -1);
+    CHECK(ha_parse_centi("-5", 2) == -1);
+    CHECK(ha_parse_centi("21,5", 4) == -1);
+    CHECK(ha_parse_centi(".5", 2) == -1);
+    CHECK(ha_parse_centi("1000", 4) == -1);
+    CHECK(ha_parse_centi("", 0) == -1);
 }
 
 void run_ha_tests(void)
 {
+    a_room_is_a_climate_entity();
+    reads_a_setpoint();
     a_discovery_config_byte_for_byte();
     only_letters_and_digits_go_into_a_topic();
     temperatures_below_zero_and_whole_ones();

@@ -64,6 +64,15 @@ static uint32_t stub_unix(void *ctx)
     return clock_unset ? 0 : 1793966400u + now / 1000u;
 }
 
+/* Each zone's setpoint, as the gateway keeps it. */
+static uint16_t setpoints[256];
+
+static uint16_t stub_setpoint(void *ctx, uint8_t zone)
+{
+    (void)ctx;
+    return setpoints[zone] ? setpoints[zone] : SESSION_DEFAULT_SETPOINT;
+}
+
 /* The last report handed to the gateway. */
 static struct {
     int count;
@@ -106,13 +115,14 @@ static void stub_on_joined(void *ctx, const uint8_t device[8])
 {
     joined_count++;
     if (join_into_zone >= 0)
-        CHECK(session_set_zone(ctx, (uint8_t)join_into_zone, device, SESSION_DEFAULT_SETPOINT));
+        CHECK(session_set_zone(ctx, (uint8_t)join_into_zone, device));
 }
 
 static const struct session_ops OPS = {.tx = stub_tx,
                                        .log = stub_log,
                                        .rng = stub_rng,
                                        .unix_time = stub_unix,
+                                       .setpoint = stub_setpoint,
                                        .on_report = stub_on_report,
                                        .on_request = stub_on_request,
                                        .on_joined = stub_on_joined};
@@ -129,6 +139,7 @@ static void fresh(struct session *s, bool pair_window)
     refuse_next = 0;
     clock_unset = false;
     memset(&reported, 0, sizeof reported);
+    memset(setpoints, 0, sizeof setpoints);
     memset(&requests, 0, sizeof requests);
     joined_count = 0;
     join_into_zone = -1;
@@ -143,7 +154,7 @@ static void serving_zone11(struct session *s, uint32_t overlay_ms)
 {
     fresh(s, false);
     session_set_home(s, 4242, overlay_ms);
-    session_set_zone(s, 11, joiner(), SESSION_DEFAULT_SETPOINT);
+    session_set_zone(s, 11, joiner());
 }
 
 /* --- events and frames ------------------------------------------------------ */
@@ -840,7 +851,7 @@ static void a_device_without_a_zone_gets_no_config(void)
     CHECK(requests.count == 1 && requests.code == COAP_GET && !requests.answered);
     CHECK(strcmp(requests.path, "d/VA0000000001/config") == 0);
 
-    session_set_zone(&s, 2, joiner(), SESSION_DEFAULT_SETPOINT);
+    session_set_zone(&s, 2, joiner());
     m = get(0x0303, "d/VA0000000001/config");
     from_joiner(&s, false, &m);
     CHECK(n_sent == 1 && requests.count == 2 && requests.answered);
@@ -904,6 +915,52 @@ static void leaves_time_unanswered_until_the_clock_is_set(void)
     CHECK(n_sent == 1 && coap_of(0).code == COAP_CODE(2, 5) && coap_of(0).payload_len == 5);
 }
 
+/* A setpoint from Home Assistant: the zone state goes to the owner on its
+ * sample, ends an overlay set on the device, and is what the zone serves
+ * from then on; a 2.05 ACK (a VA01 answers so, freedo) ends it as a 2.04. */
+static void writes_a_new_setpoint_to_the_owner(void)
+{
+    static struct session s;
+    serving_zone11(&s, 3600000u);
+    struct coap_msg m = overlay_put(0x0601, "h/4242/z/11/overlay", OVERLAY_21C, sizeof OVERLAY_21C);
+    from_joiner(&s, false, &m);
+    CHECK(!session_write_zone(&s, 12, now)); /* not served */
+
+    setpoints[11] = 2150;
+    CHECK(session_write_zone(&s, 11, now));
+    int w = unicast(1);
+    CHECK(w >= 0 && sent[w].tx.flags == LINK_TX_TRAIN_ANCHORED);
+    struct coap_msg write = coap_of((size_t)w);
+    CHECK(write.type == COAP_CON && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
+    uint8_t want[64];
+    size_t wn = tado_zone_state(want, sizeof want, 2150, -1);
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+
+    /* The zone serves it, without the device's overlay. */
+    m = get(0x0602, "h/4242/z/11/s");
+    from_joiner(&s, false, &m);
+    struct coap_msg st = coap_of((size_t)unicast(2));
+    CHECK_BYTES(st.payload, st.payload_len, want, wn);
+
+    struct coap_msg a = ack(write.mid, COAP_CODE(2, 5));
+    from_joiner(&s, false, &a);
+    now += SESSION_ZONE_WRITE_TIMEOUT_MS;
+    session_tick(&s, now);
+    CHECK(unicasts() == 3); /* acknowledged: not again */
+
+    /* A second change before the first was ACKed replaces it under a new MID. */
+    setpoints[11] = 1900;
+    session_write_zone(&s, 11, now);
+    setpoints[11] = 2000;
+    session_write_zone(&s, 11, now);
+    struct coap_msg w1 = coap_of((size_t)unicast(3)), w2 = coap_of((size_t)unicast(4));
+    CHECK(w1.mid != w2.mid);
+    from_joiner(&s, false, &(struct coap_msg){.type = COAP_ACK, .code = COAP_CODE(2, 4), .mid = w2.mid});
+    now += SESSION_ZONE_WRITE_TIMEOUT_MS;
+    session_tick(&s, now);
+    CHECK(unicasts() == 5);
+}
+
 void run_session_tests(void)
 {
     verbose = getenv("VERBOSE") != NULL;
@@ -935,4 +992,5 @@ void run_session_tests(void)
     a_device_without_a_zone_gets_no_config();
     hands_a_decoded_report_to_the_gateway();
     leaves_time_unanswered_until_the_clock_is_set();
+    writes_a_new_setpoint_to_the_owner();
 }
