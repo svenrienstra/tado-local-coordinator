@@ -117,7 +117,7 @@ struct session_zone {
      * (TADO_OVERLAY_MANUAL) or a boost (TADO_OVERLAY_TIMER). */
     bool overlay;
     uint8_t overlay_kind;
-    bool overlay_ours;              /* a boost the session started, not one from the device */
+    bool overlay_ours;              /* started by the session (boost, hold), not by the device */
     uint16_t overlay_setpoint;
     /* Compared as elapsed time: any length < 2^32 ms; 0 lasts until changed. */
     uint32_t overlay_start_ms, overlay_for_ms;
@@ -189,6 +189,10 @@ bool session_restate_zone(struct session *s, uint8_t zone, bool changed, uint32_
 
 /* A boost: for_ms at setpoint (centi-C), then back to the program. */
 bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t for_ms, uint32_t now_ms);
+
+/* A manual setpoint the zone holds over its program until changed (a new
+ * setpoint ends it, session_write_zone). */
+bool session_hold(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t now_ms);
 
 /* The zone's state as it is served and written now: its program and the
  * overlay it runs. False when the zone is not served. */

@@ -457,6 +457,10 @@ builders byte for byte):
   30 minutes, kept by the gateway, then the return to the program without
   `6440`; a cancel carries `6440`. A setpoint change also ends an overlay, as
   a cancel.
+- A setpoint set while away (Home Assistant or the page) is held over the
+  away temperature as a manual overlay (`6240=2`) until changed, as the tado
+  app does; the home setpoint stays (decided 2026-11-18, to revisit if it
+  feels wrong in use).
 - Not covered by any capture: an overlay set while away, and how a VA02
   answers a boost.
 

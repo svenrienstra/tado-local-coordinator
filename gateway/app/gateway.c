@@ -646,17 +646,18 @@ bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
     if (!r || !ha_setpoint_ok(centi))
         return false;
     const struct session_zone *z = session_zone(&g->session, zone);
+    if (g->away && z) {
+        /* Away, the room follows its away temperature: a setpoint is held over
+         * it until changed, as the tado app does; the home setpoint stays. */
+        session_hold(&g->session, zone, centi, now(g));
+        notice(g, "room %s: %u.%02u C until changed, while away", r->name, centi / 100u, centi % 100u);
+        return true;
+    }
     if (r->setpoint == centi && (!z || (!z->overlay && !z->writing)))
         return true; /* the device has it already: no wake-up for nothing */
     if (r->setpoint != centi) {
         r->setpoint = centi;
         save_soon(g);
-    }
-    if (g->away) {
-        /* The home setpoint: in away the room follows its away temperature, so
-         * nothing goes to the device, and a boost or overlay keeps running. */
-        notice(g, "room %s: setpoint %u.%02u C, for when the home is back", r->name, centi / 100u, centi % 100u);
-        return true;
     }
     /* Also when unchanged, to end an overlay set on the device. The device
      * confirms it: its next report echoes the zone state. */

@@ -510,10 +510,20 @@ bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t 
     return true;
 }
 
+bool session_hold(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t now)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (!z)
+        return false;
+    start_overlay(z, TADO_OVERLAY_MANUAL, true, setpoint, now, 0);
+    write_zone(s, z, now, "manual setpoint", false, true);
+    return true;
+}
+
 uint32_t session_boost_left_ms(struct session *s, uint8_t zone, uint32_t now)
 {
     const struct session_zone *z = zone_find(s, zone);
-    if (!z || !z->overlay_ours || !overlay_running(z, now))
+    if (!z || !z->overlay_ours || z->overlay_kind != TADO_OVERLAY_TIMER || !overlay_running(z, now))
         return 0;
     return z->overlay_for_ms - (now - z->overlay_start_ms);
 }

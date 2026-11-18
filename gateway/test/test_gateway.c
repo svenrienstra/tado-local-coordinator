@@ -924,10 +924,29 @@ static void away_off_is_confirmed_by_the_device_and_setpoints_wait_for_home(void
     CHECK(strstr(last_on("tado/zone/11/state"), "\"confirmed\":true"));
     a_job_within(jobs); /* the 2.04 to that report */
 
+    /* A setpoint while away is held over the away temperature until changed;
+     * the home setpoint stays, and Home Assistant's target is the held one. */
     jobs_before = jobs;
     gateway_command(&gw, "tado/zone/11/setpoint/set", "21", 2, false);
-    CHECK(!a_job_within(jobs_before) && gateway_room(&gw, 11)->setpoint == 2100);
-    CHECK(logged("for when the home is back"));
+    CHECK(a_job_within(jobs_before) && gateway_room(&gw, 11)->setpoint == 1800);
+    CHECK(radio_job_coap(network_key(), &write));
+    uint8_t want[64];
+    size_t wn = tado_zone_block(want, sizeof want, &(struct tado_zone_block){
+        .away = true, .overlay = TADO_OVERLAY_MANUAL, .overlay_on = true, .overlay_setpoint = 2100, .marker = true});
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+    run(1);
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"target\":21.00"));
+    CHECK(gateway_boost_left(&gw, 11) == 0); /* held, not a boost */
+    for (int i = 0; i < 2 * 6000; i++)
+        run(1);
+    CHECK(session_zone(&gw.session, 11)->overlay); /* until changed: no end of its own */
+
+    /* Home again: the hold is kept, as an overlay set on a device is. */
+    gateway_set_away(&gw, false);
+    CHECK(session_zone(&gw.session, 11)->overlay);
+    /* A setpoint at home ends it. */
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "19", 2, false);
+    CHECK(!session_zone(&gw.session, 11)->overlay && gateway_room(&gw, 11)->setpoint == 1900);
 }
 
 /* An unconfirmed device that left its room does not make the next one stale. */

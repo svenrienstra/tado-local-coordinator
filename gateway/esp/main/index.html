@@ -168,7 +168,10 @@ const $ = (id) => document.getElementById(id);
 const PAIR_WINDOW = 120;
 let state = null;
 const pending = {}, timers = {}; /* setpoints clicked but not sent yet, by zone */
-const setpoint = (r) => pending[r.zone] ?? r.setpoint;
+/* What the room's control starts from: at home its setpoint; away what it
+ * heats to now (a setpoint set while away is held until changed). */
+const base = (r) => state.away && r.state && r.state.target != null ? Math.round(r.state.target * 100) : r.setpoint;
+const setpoint = (r) => pending[r.zone] ?? base(r);
 
 function el(tag, props, ...children) {
   const e = document.createElement(tag);
@@ -278,7 +281,7 @@ function roomTile(r) {
    * in its next report (the status line). Clicks add up on the page and go
    * out once they stop, on the 0.5 grid. */
   const shown = el("span");
-  const show = () => { shown.textContent = `Set ${deg(setpoint(r) / 100)}`; };
+  const show = () => { shown.textContent = `${state.away ? "Hold" : "Set"} ${deg(setpoint(r) / 100)}`; };
   const step = (dir) => {
     const c = setpoint(r); /* whole centi-degrees */
     const next = (dir > 0 ? Math.floor(c / 50) + 1 : Math.ceil(c / 50) - 1) * 50;
@@ -287,7 +290,7 @@ function roomTile(r) {
     clearTimeout(timers[r.zone]);
     timers[r.zone] = setTimeout(() => {
       const c = pending[r.zone];
-      if (c === r.setpoint) { delete pending[r.zone]; return; } /* the clicks cancelled out */
+      if (c === base(r)) { delete pending[r.zone]; return; } /* the clicks cancelled out */
       act(`/api/rooms/${r.zone}`, { setpoint: (c / 100).toFixed(2) }).then(() => { delete pending[r.zone]; render(); });
     }, 600);
   };

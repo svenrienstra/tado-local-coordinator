@@ -156,7 +156,9 @@ bool gateway_delete_room(struct gateway *g, uint8_t zone);
  * GATEWAY_SAVE_DELAY_MS after the last change, and writes it to the room's
  * device in its next window, which ends an overlay set on the device; the
  * device's next report confirms it. Nothing is written when the device has
- * it already. False for no such room or a setpoint out of range. */
+ * it already. While away it is held over the away temperature until changed
+ * (a manual overlay), and the home setpoint stays. False for no such room or
+ * a setpoint out of range. */
 bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
 
 /* Home or away, for the whole home: each room follows its away temperature
