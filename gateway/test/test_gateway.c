@@ -59,7 +59,7 @@ static const struct gwlink_ops LINK = {.write = link_write, .read = link_read, .
 
 static struct {
     char topic[96];
-    char payload[1280];
+    char payload[1536];
     bool retain;
 } published[64];
 static size_t n_published;
@@ -453,7 +453,7 @@ static void publishes_a_report_for_home_assistant(void)
     CHECK(zone_config && strstr(zone_config, "\"name\":\"Living\"")); /* the room's name */
     CHECK(last_on("homeassistant/sensor/tado_zone_11/demand/config") == NULL); /* no demand yet */
     const char *zone = last_on("tado/zone/11/state");
-    CHECK(zone && strcmp(zone, "{\"temperature\":18.66}") == 0);
+    CHECK(zone && strcmp(zone, "{\"temperature\":18.66,\"target\":18.00,\"confirmed\":false}") == 0);
     CHECK(fw.queue_len == 1); /* and its 2.04 */
 
     /* The demand follows; discovery goes once per sensor, state every time. */
@@ -464,7 +464,8 @@ static void publishes_a_report_for_home_assistant(void)
     coap_add_path(&put, "h/4242/z/11/act");
     device_sends_coap(&put, 0x31, 0x901);
     run(1);
-    CHECK(strcmp(last_on("tado/zone/11/state"), "{\"temperature\":18.66,\"demand\":35}") == 0);
+    CHECK(strcmp(last_on("tado/zone/11/state"),
+                 "{\"temperature\":18.66,\"demand\":35,\"target\":18.00,\"confirmed\":false}") == 0);
     CHECK(last_on("homeassistant/sensor/tado_zone_11/demand/config") != NULL);
     size_t discovery = 0;
     for (size_t i = before; i < n_published; i++)
@@ -573,7 +574,7 @@ static void a_paired_device_waits_for_a_room_then_takes_it(void)
 
     CHECK(web("GET", "/api/state", "", out, sizeof out) == 200);
     CHECK(strstr(out, "\"rooms\":[{\"zone\":1,\"name\":\"Living room\",\"setpoint\":1800,\"away_setpoint\":0,"
-                     "\"boost_left\":0,\"state\":{}}]"));
+                     "\"boost_left\":0,\"state\":{\"target\":18.00,\"confirmed\":false}}]"));
     CHECK(strstr(out, "{\"eui\":\"0bb1cefa07c51b00\",\"serial\":\"SU2922080256\",\"zone\":1,\"waiting\":false,"));
     CHECK(strstr(out, "\"pair\":{\"state\":\"joined\",\"left\":0,\"joined\":\"0bb1cefa07c51b00\"}"));
 
@@ -616,11 +617,11 @@ static void rooms_and_devices_on_the_setup_page(void)
     coap_add_path(&report, "d/SU2922080256/sen");
     device_sends_coap(&report, 0x6f, 0x1fff);
     run(1);
-    CHECK(strcmp(last_on("tado/zone/11/state"), "{\"temperature\":18.66}") == 0);
+    CHECK(strcmp(last_on("tado/zone/11/state"), "{\"temperature\":18.66,\"target\":18.00,\"confirmed\":false}") == 0);
     CHECK(gateway_assign(&gw, device(), 0));
     CHECK(!gw.session.zones[0].used);
     run(1);
-    CHECK(strcmp(last_on("tado/zone/11/state"), "{}") == 0);
+    CHECK(strcmp(last_on("tado/zone/11/state"), "{\"target\":18.00,\"confirmed\":false}") == 0);
     CHECK(gateway_assign(&gw, other, 11) && gw.session.zones[0].used &&
           memcmp(gw.session.zones[0].owner, other, 8) == 0);
 
@@ -713,6 +714,8 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     gateway_command(&gw, "tado/zone/11/setpoint/set", "21.5", 4, false);
     CHECK(gateway_room(&gw, 11)->setpoint == 2150);
     CHECK(a_job_within(jobs_before)); /* on the device's channel sample */
+    /* Home Assistant shows the new target at once, not yet confirmed. */
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"target\":21.50,\"confirmed\":false"));
     struct coap_msg write;
     CHECK(radio_job_coap(network_key(), &write) && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
     uint8_t want[64];
@@ -727,6 +730,7 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     device_sends_coap(&put, 0x72, 0x3000);
     run(1);
     CHECK(strstr(last_on("tado/zone/11/state"), "\"setpoint\":21.50"));
+    CHECK(strstr(last_on("tado/zone/11/state"), "\"target\":21.50,\"confirmed\":true")); /* ACKed and echoed */
 
     /* Saved once the changes stop, not per change. */
     CHECK(install_saves == saves);

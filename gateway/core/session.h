@@ -189,6 +189,10 @@ bool session_restate_zone(struct session *s, uint8_t zone, bool changed, uint32_
 /* A boost: for_ms at setpoint (centi-C), then back to the program. */
 bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t for_ms, uint32_t now_ms);
 
+/* The zone's state as it is served and written now: its program and the
+ * overlay it runs. False when the zone is not served. */
+bool session_zone_block(struct session *s, uint8_t zone, uint32_t now_ms, struct tado_zone_block *out);
+
 /* Ends the zone's overlay, a boost or one set on the device; false when it
  * runs none. */
 bool session_end_overlay(struct session *s, uint8_t zone, uint32_t now_ms);

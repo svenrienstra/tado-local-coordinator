@@ -73,7 +73,7 @@ static void put_state(struct gateway *g, struct out *o)
             first ? "" : ",", r->zone, r->name, r->setpoint, r->away_setpoint,
             (unsigned long)gateway_boost_left(g, r->zone));
         if (!o->full)
-            wrote(o, ha_zone_state(o->buf + o->len, o->cap - o->len, &r->r));
+            wrote(o, ha_zone_state(o->buf + o->len, o->cap - o->len, &r->r, &r->target));
         put(o, "}");
         first = false;
     }

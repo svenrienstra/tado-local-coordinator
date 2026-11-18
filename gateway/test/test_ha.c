@@ -71,18 +71,18 @@ static void a_zone_shows_the_setpoint_it_heats_to(void)
     r.overlay_setpoint = 2100;
     ha_merge(&z, &r);
     char out[128];
-    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":18.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":18.00}") == 0);
 
     struct tado_report overlay = {.fields = TADO_OVERLAY | TADO_OVERLAY_SETPOINT, .overlay = 2,
                                   .overlay_setpoint = 2100};
     ha_merge(&z, &overlay);
-    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":21.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":21.00}") == 0);
 
     /* The zone's own measure wins over the owner's temperature. */
     struct tado_report m = {.fields = TADO_TEMPERATURE | TADO_ZONE_TEMPERATURE, .temperature = 1900,
                             .zone_temperature = 1875};
     ha_merge(&z, &m);
-    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"temperature\":18.75,\"setpoint\":21.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"temperature\":18.75,\"setpoint\":21.00}") == 0);
     CHECK(ha_zone_entities(&z) == (1u << HA_ZONE_TEMPERATURE | 1u << HA_ZONE_SETPOINT | 1u << HA_ZONE_CLIMATE));
 }
 
@@ -90,7 +90,7 @@ static void a_zone_shows_the_setpoint_it_heats_to(void)
  * set goes to tado/zone/<n>/setpoint/set. */
 static void a_room_is_a_climate_entity(void)
 {
-    char topic[96], payload[1024];
+    char topic[96], payload[1536];
     CHECK(ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, "Living", HA_ZONE_CLIMATE));
     CHECK(strcmp(topic, "homeassistant/climate/tado_zone_11/config") == 0);
     CHECK(strcmp(payload,
@@ -99,7 +99,10 @@ static void a_room_is_a_climate_entity(void)
                  "\"temperature_command_topic\":\"~/setpoint/set\","
                  "\"temperature_command_template\":\"{{ '%.1f' | format(value) }}\","
                  "\"temperature_state_topic\":\"~/state\","
-                 "\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\","
+                 "\"temperature_state_template\":\"{{ value_json.target | default('None') }}\","
+                 "\"json_attributes_topic\":\"~/state\","
+                 "\"json_attributes_template\":\"{{ {'confirmed': value_json.confirmed | default(false), "
+                 "'reported_setpoint': value_json.setpoint | default(none)} | tojson }}\","
                  "\"current_temperature_topic\":\"~/state\","
                  "\"current_temperature_template\":\"{{ value_json.temperature | default('None') }}\","
                  "\"action_topic\":\"~/state\","
@@ -153,7 +156,7 @@ static void reads_a_zone_command_topic(void)
 /* The whole home's Away switch, and a boost as the device reports it. */
 static void away_and_boost(void)
 {
-    char topic[96], payload[1024];
+    char topic[96], payload[1536];
     CHECK(ha_away_discovery(topic, sizeof topic, payload, sizeof payload));
     CHECK(strcmp(topic, "homeassistant/switch/tado_gateway/away/config") == 0);
     CHECK(strstr(payload, "\"command_topic\":\"tado/home/set\"") && strstr(payload, "\"payload_on\":\"away\""));
@@ -162,9 +165,18 @@ static void away_and_boost(void)
     struct tado_report z = {.fields = TADO_SETPOINT | TADO_OVERLAY | TADO_OVERLAY_SETPOINT, .setpoint = 2000,
                             .overlay = TADO_OVERLAY_TIMER, .overlay_setpoint = 2500};
     char out[128];
-    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":25.00,\"boost\":true}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":25.00,\"boost\":true}") == 0);
     z.overlay = TADO_OVERLAY_MANUAL;
-    CHECK(ha_zone_state(out, sizeof out, &z) && strcmp(out, "{\"setpoint\":25.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":25.00}") == 0);
+
+    /* The gateway's target next to what the device reported: not confirmed
+     * until they agree; a room off in away has no target. */
+    struct ha_target t = {.known = true, .on = true, .setpoint = 2150};
+    CHECK(ha_zone_state(out, sizeof out, &z, &t) &&
+          strcmp(out, "{\"setpoint\":25.00,\"target\":21.50,\"confirmed\":false}") == 0);
+    t = (struct ha_target){.known = true, .on = false, .confirmed = true};
+    struct tado_report empty = {0};
+    CHECK(ha_zone_state(out, sizeof out, &empty, &t) && strcmp(out, "{\"confirmed\":true}") == 0);
 }
 
 void run_ha_tests(void)

@@ -80,7 +80,21 @@ uint32_t ha_zone_entities(const struct tado_report *zone);
 size_t ha_device_state_topic(char *out, size_t cap, const char *serial);
 size_t ha_device_state(char *out, size_t cap, const struct ha_device *d);
 size_t ha_zone_state_topic(char *out, size_t cap, unsigned zone);
-size_t ha_zone_state(char *out, size_t cap, const struct tado_report *zone);
+/* What the gateway has a room heat to now (its setpoint, away temperature or
+ * boost: its own word, which Home Assistant's climate entity shows), and
+ * whether the device confirmed it: no write pending and its report says so. */
+struct ha_target {
+    bool known;
+    bool on;
+    uint16_t setpoint; /* centi-degrees C, when on */
+    bool confirmed;
+};
+
+/* The setpoint the device reported it heats to (an overlay's, else its own);
+ * false when it reported none. */
+bool ha_reported_setpoint(const struct tado_report *zone, uint16_t *centi);
+
+size_t ha_zone_state(char *out, size_t cap, const struct tado_report *zone, const struct ha_target *target);
 
 /* The discovery topic and config of one entity of a device (by serial) or a
  * zone, which Home Assistant shows under the room's name (no quotes or

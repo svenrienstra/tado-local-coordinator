@@ -90,7 +90,7 @@ static bool zone_temperature(const struct tado_report *z, int16_t *t)
 }
 
 /* What the zone heats to: a running overlay's setpoint, else its own. */
-static bool zone_setpoint(const struct tado_report *z, uint16_t *c)
+bool ha_reported_setpoint(const struct tado_report *z, uint16_t *c)
 {
     if ((z->fields & TADO_OVERLAY) && z->overlay != 0 && (z->fields & TADO_OVERLAY_SETPOINT))
         *c = z->overlay_setpoint;
@@ -108,7 +108,7 @@ uint32_t ha_zone_entities(const struct tado_report *z)
     uint32_t e = 0;
     if (zone_temperature(z, &t))
         e |= 1u << HA_ZONE_TEMPERATURE;
-    if (zone_setpoint(z, &c))
+    if (ha_reported_setpoint(z, &c))
         e |= 1u << HA_ZONE_SETPOINT;
     if (z->fields & TADO_DEMAND)
         e |= 1u << HA_ZONE_DEMAND;
@@ -188,7 +188,7 @@ size_t ha_zone_state_topic(char *out, size_t cap, unsigned zone)
     return done(&o);
 }
 
-size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z)
+size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z, const struct ha_target *target)
 {
     struct out o = {out, cap, 0, false};
     int16_t t;
@@ -196,12 +196,17 @@ size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z)
     put(&o, "{");
     if (zone_temperature(z, &t))
         put_fixed(&o, "temperature", t, 2);
-    if (zone_setpoint(z, &c))
+    if (ha_reported_setpoint(z, &c))
         put_fixed(&o, "setpoint", c, 2);
     if (z->fields & TADO_DEMAND)
         put_fixed(&o, "demand", z->demand, 0);
     if ((z->fields & TADO_OVERLAY) && z->overlay == TADO_OVERLAY_TIMER)
         put(&o, "%s\"boost\":true", o.len > 1 ? "," : "");
+    if (target && target->known) {
+        if (target->on)
+            put_fixed(&o, "target", target->setpoint, 2);
+        put(&o, "%s\"confirmed\":%s", o.len > 1 ? "," : "", target->confirmed ? "true" : "false");
+    }
     put(&o, "}");
     return done(&o);
 }
@@ -243,7 +248,12 @@ static void put_climate(struct out *o, unsigned zone, const char *uid, const cha
     put(o, "\"mode_state_topic\":\"~/state\",\"mode_state_template\":\"heat\",");
     /* One decimal, not a float as Python prints it (20.200000000000003). */
     put(o, "\"temperature_command_topic\":\"~/setpoint/set\",\"temperature_command_template\":\"{{ '%%.1f' | format(value) }}\",");
-    put(o, "\"temperature_state_topic\":\"~/state\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",");
+    /* The target is the gateway's word; whether the device took it, and what it
+     * reported, are attributes. */
+    put(o, "\"temperature_state_topic\":\"~/state\",\"temperature_state_template\":\"{{ value_json.target | default('None') }}\",");
+    put(o, "\"json_attributes_topic\":\"~/state\",\"json_attributes_template\":"
+           "\"{{ {'confirmed': value_json.confirmed | default(false), "
+           "'reported_setpoint': value_json.setpoint | default(none)} | tojson }}\",");
     put(o, "\"current_temperature_topic\":\"~/state\",\"current_temperature_template\":"
            "\"{{ value_json.temperature | default('None') }}\",");
     put(o, "\"action_topic\":\"~/state\",\"action_template\":"

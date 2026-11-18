@@ -271,6 +271,27 @@ static void publish_device(struct gateway *g, struct gateway_device *dev)
         publish(g);
 }
 
+static struct session_program program_of(const struct gateway *g, const struct gateway_room *r);
+
+/* What the room heats to now, by the gateway's word, and whether its device
+ * confirmed it: no write is waiting for its ACK and it reported that setpoint
+ * (an overlay's, else its own). */
+static struct ha_target target_of(struct gateway *g, const struct gateway_room *r)
+{
+    struct tado_zone_block b;
+    if (!session_zone_block(&g->session, r->zone, now(g), &b)) {
+        struct session_program p = program_of(g, r); /* no device: nothing to confirm */
+        return (struct ha_target){.known = true, .on = p.on, .setpoint = p.setpoint};
+    }
+    struct ha_target t = {.known = true};
+    t.on = b.overlay ? b.overlay_on : b.on;
+    t.setpoint = b.overlay ? b.overlay_setpoint : b.setpoint;
+    uint16_t reported;
+    const struct session_zone *z = session_zone(&g->session, r->zone);
+    t.confirmed = !z->writing && (!t.on || (ha_reported_setpoint(&r->r, &reported) && reported == t.setpoint));
+    return t;
+}
+
 static void publish_room(struct gateway *g, struct gateway_room *room)
 {
     uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
@@ -279,8 +300,9 @@ static void publish_room(struct gateway *g, struct gateway_room *room)
                                                    room->zone, room->name, e))
             publish(g);
     room->discovered |= fresh;
+    room->target = target_of(g, room);
     if (ha_zone_state_topic(g->topic, sizeof g->topic, room->zone) &&
-        ha_zone_state(g->payload, sizeof g->payload, &room->r))
+        ha_zone_state(g->payload, sizeof g->payload, &room->r, &room->target))
         publish(g);
 }
 
@@ -307,11 +329,17 @@ static void publish_dirty(struct gateway *g)
             g->devices[i].dirty = false;
             publish_device(g, &g->devices[i]);
         }
-    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++)
-        if (g->rooms[i].used && g->rooms[i].dirty) {
-            g->rooms[i].dirty = false;
-            publish_room(g, &g->rooms[i]);
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
+        struct gateway_room *r = &g->rooms[i];
+        if (!r->used)
+            continue;
+        /* A new target, a write ACKed or a boost run out show here, not as a report. */
+        struct ha_target t = target_of(g, r);
+        if (r->dirty || memcmp(&t, &r->target, sizeof t) != 0) {
+            r->dirty = false;
+            publish_room(g, r);
         }
+    }
 }
 
 static void seen(struct gateway *g, struct gateway_device *d)

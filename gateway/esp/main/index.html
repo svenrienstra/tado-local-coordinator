@@ -232,6 +232,7 @@ function roomTile(r) {
   if (heating) chips.append(chip("flame", `${s.demand}%`));
   if (d && d.waiting) chips.append(chip("clock", "taking the room"));
   if (r.boost_left > 0) chips.append(chip("bolt", `boost ${Math.ceil(r.boost_left / 60)} min`));
+  if (d && s.confirmed === false) chips.append(chip("clock", "device not confirmed yet"));
   if (state.away) chips.append(chip("moon", r.away_setpoint ? `away ${deg(r.away_setpoint / 100)}` : "off while away"));
 
   const rename = el("button", { title: "Rename" }, icon("edit"));

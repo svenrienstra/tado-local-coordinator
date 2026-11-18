@@ -113,9 +113,10 @@ struct gateway {
         uint16_t away_setpoint; /* in away; 0: off */
         char name[INSTALL_NAME_MAX + 1];
         struct tado_report r; /* its owner's reports */
+        struct ha_target target; /* as last published */
         uint32_t discovered;
     } rooms[INSTALL_MAX_ROOMS];
-    char topic[96], payload[1280]; /* publishing scratch; a climate config is about 1 KB */
+    char topic[96], payload[1536]; /* publishing scratch; a climate config is about 1.3 KB */
 };
 
 /* A free-running millisecond clock comes in through link_ops.now_ms. */

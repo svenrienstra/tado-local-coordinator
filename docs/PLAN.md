@@ -181,9 +181,14 @@ old command again at every reconnect, or its clearing.
   opening). Devices and zones appear at runtime, so discovery messages are
   published and removed as they come and go.
 - **Zone state (retained):** `tado/zone/<n>/state`, JSON, e.g.
-  `{"temperature": 20.4, "setpoint": 21.0, "demand": 35}`. The temperature is
-  the zone's measure (3.8), and every value is what the devices reported, never
-  what was asked for, so Home Assistant shows the true state.
+  `{"temperature": 20.4, "setpoint": 21.0, "demand": 35, "target": 21.5,
+  "confirmed": false}`. The temperature is the zone's measure (3.8), and
+  temperature, setpoint and demand are what the devices reported, never what
+  was asked for. `target` is the gateway's own word (the room's setpoint, away
+  temperature or boost), which the climate entity shows so its slider stays
+  where it was set; `confirmed` says whether the device took it (no write
+  pending and its report agrees). The climate entity carries `confirmed` and
+  `reported_setpoint` as attributes (decided 2026-11-18).
 - **Device state (retained):** `tado/device/<serial>/state`, e.g.
   `{"temperature": 20.9, "battery": "ok", "rssi": -71, "last_seen": "…"}`.
 - **Commands (not retained):** `tado/zone/<n>/setpoint/set` with a number in °C.

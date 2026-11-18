@@ -483,6 +483,14 @@ bool session_restate_zone(struct session *s, uint8_t zone, bool changed, uint32_
     return true;
 }
 
+bool session_zone_block(struct session *s, uint8_t zone, uint32_t now, struct tado_zone_block *out)
+{
+    const struct session_zone *z = zone_find(s, zone);
+    if (z)
+        *out = block_of(s, z, now);
+    return z != NULL;
+}
+
 bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t for_ms, uint32_t now)
 {
     struct session_zone *z = zone_find(s, zone);
