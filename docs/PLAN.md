@@ -486,10 +486,12 @@ stop it as well. Our plant is a **Vaillant ecoTEC plus on eBUS**, the same as
 the issue's, where the id is **80 (`ebus_a`)**; freedo's table puts 0, 1, 5-9,
 83 and 200 in that family too, so the thermostat's own report decides.
 - How a device leaves tado is not settled: the pairing reset (button or menu)
-  did not make the sensor leave (it kept its old key, `SENSOR.md`), removing
-  it in the tado app did, and the full factory reset wipes the thermostat's
-  id. Try the routes on a valve first (which make it leave and join us); a
-  valve cannot show whether the id survives (0 reads as its 112).
+  did not make the sensor leave (it kept its old key, `SENSOR.md`); a factory
+  reset on the device did, and on the thermostat a factory reset wipes the
+  id. If the thermostat, too, only leaves with a factory reset, its id is lost
+  on the move. Try the routes on a valve first (which make it leave and join
+  us; removing it in the tado app is untried); a valve cannot show whether
+  the id survives (0 reads as its 112).
 - So the id handling below comes before the thermostat moves: then even a
   factory reset is recoverable (set 80, checked against `hvac/codes`). Keep
   the tado bridge until the boiler runs from the gateway: re-running tado's

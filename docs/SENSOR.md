@@ -7,8 +7,10 @@ answers are the device's, decoded with freedo's tag tables (`PROTOCOL.md`).
 ## Pairing
 
 - A long press or the pairing-reset menu entry did not make it leave the
-  commercial network: it kept its old key and E0 followed. Removing it in the
-  tado app did; it then joined us with `d/pair` (`JOIN.md`).
+  commercial network: it kept its old key and E0 followed. A factory reset on
+  the device itself did; it then joined us with `d/pair` (`JOIN.md`). (An
+  earlier version of this note said it was removed in the tado app; it was
+  not, corrected 2026-11-18.)
 - Unplug the commercial bridge while pairing, or it answers the Beacon
   Request.
 
