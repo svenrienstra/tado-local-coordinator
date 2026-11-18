@@ -496,6 +496,19 @@ the issue's, where the id is **80 (`ebus_a`)**; freedo's table puts 0, 1, 5-9,
   factory reset is recoverable (set 80, checked against `hvac/codes`). Keep
   the tado bridge until the boiler runs from the gateway: re-running tado's
   installation assistant restored the id in the issue.
+- The thermostat has an installer menu of its own (tado installer manual for
+  the wired Smart Thermostat V3+, step 5: the button for 3 s, three times,
+  then the Config Menu ID, hot water control, save). The factory default is
+  Relay (R01); Vaillant eBus is **D07** (direct, hot water control, one
+  heating circuit) or D05 (with a VRC 430/470, no hot water control). That
+  is very likely the same choice `015d` carries, made on the device; how the
+  menu ids map to freedo's module ids (80, `ebus_a`) is not known. We never
+  send `015d`, so a value set there survives the gateway, and `hvac/codes`
+  reports it. Not known: whether the device applies it offline (the boiler
+  interface image was stored in the issue) or wants a download from the
+  cloud ("Configuration Download" icon). Before the move, read the current
+  Config Menu ID in that menu (leave without saving); after the move, set it
+  there first, then fall back to the gateway's id handling.
 - Learn the id from `h/<home>/hvac/codes`, keep it per device in flash (a new
   install record), and serve it in the thermostat's `d/config` only when it is
   known and in freedo's valid table; never send `015d` otherwise (a body
