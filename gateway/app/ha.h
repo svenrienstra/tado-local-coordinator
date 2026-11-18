@@ -32,6 +32,8 @@ enum ha_entity {
     HA_ZONE_DEMAND,
     HA_ZONE_CLIMATE, /* the room's thermostat: set its setpoint from Home Assistant */
 };
+#define HA_ZONE_FIRST HA_ZONE_TEMPERATURE
+#define HA_ZONE_LAST  HA_ZONE_CLIMATE
 
 /* Where Home Assistant sends a room's setpoint (degrees C, e.g. "21.5"):
  * the topic for a zone, the subscription for all, and the zone of a topic
@@ -42,6 +44,8 @@ bool ha_setpoint_topic(const char *topic, unsigned *zone);
 /* What tado's own app offers. */
 #define HA_SETPOINT_MIN 500  /* centi-degrees C */
 #define HA_SETPOINT_MAX 2500
+
+static inline bool ha_setpoint_ok(int32_t centi) { return centi >= HA_SETPOINT_MIN && centi <= HA_SETPOINT_MAX; }
 
 /* What the gateway knows of a device: every report merged, newest wins. */
 struct ha_device {

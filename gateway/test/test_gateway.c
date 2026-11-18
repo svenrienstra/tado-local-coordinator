@@ -216,6 +216,22 @@ static void restart_from_flash(void)
     run(3);
 }
 
+/* Runs until the gateway hands the radio a job after `before` jobs: an
+ * anchored one waits for the device's channel sample, up to 2 s. */
+static bool a_job_within(int before)
+{
+    for (int i = 0; i < 200 && jobs == before; i++)
+        run(1);
+    return jobs > before;
+}
+
+/* Runs until a setpoint change is saved (GATEWAY_SAVE_DELAY_MS). */
+static void run_past_save(void)
+{
+    for (uint32_t i = 0; i <= GATEWAY_SAVE_DELAY_MS / 10 + 1; i++)
+        run(1);
+}
+
 /* The radio sends the job the firmware gave it. */
 static bool radio_sends(void)
 {
@@ -546,9 +562,7 @@ static void a_paired_device_waits_for_a_room_then_takes_it(void)
     int jobs_before = jobs;
     device_asks_config(0x3102, 0x61);
     CHECK(!d->waiting);
-    for (int i = 0; i < 200 && jobs == jobs_before; i++)
-        run(1); /* the answer waits for the device's channel sample */
-    CHECK(jobs == jobs_before + 1);
+    CHECK(a_job_within(jobs_before) && jobs == jobs_before + 1);
     struct coap_msg answer;
     CHECK(radio_job_coap(network_key(), &answer));
     static const struct tado_zone_role owner1 = {TADO_ROLE_OWNER, 1};
@@ -694,24 +708,29 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     run(50);
     CHECK(jobs == jobs_before && gateway_room(&gw, 11)->setpoint == 1800 && logged("refused"));
 
+    int saves = install_saves;
     gateway_command(&gw, "tado/zone/11/setpoint/set", "21.5", 4, false);
-    CHECK(gateway_room(&gw, 11)->setpoint == 2150 && saved.rooms[0].setpoint == 2150);
-    for (int i = 0; i < 200 && jobs == jobs_before; i++)
-        run(1); /* on the device's channel sample */
+    CHECK(gateway_room(&gw, 11)->setpoint == 2150);
+    CHECK(a_job_within(jobs_before)); /* on the device's channel sample */
     struct coap_msg write;
     CHECK(radio_job_coap(network_key(), &write) && write.code == COAP_PUT && coap_path_is(&write, "z/s"));
     uint8_t want[64];
     size_t wn = tado_zone_state(want, sizeof want, 2150, -1);
     CHECK_BYTES(write.payload, write.payload_len, want, wn);
 
-    /* The device's echo, as the sensor sends it after a write. */
-    uint8_t echo[64];
-    size_t en = tado_zone_state(echo, sizeof echo, 2150, -1);
-    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3401, .payload = echo, .payload_len = en};
+    /* The device ACKs, then echoes the zone state, as the sensor does. */
+    struct coap_msg ack = {.type = COAP_ACK, .code = COAP_CODE(2, 4), .mid = write.mid};
+    device_sends_coap(&ack, 0x71, 0x2fff);
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3401, .payload = want, .payload_len = wn};
     coap_add_path(&put, "z/s");
     device_sends_coap(&put, 0x72, 0x3000);
     run(1);
     CHECK(strstr(last_on("tado/zone/11/state"), "\"setpoint\":21.50"));
+
+    /* Saved once the changes stop, not per change. */
+    CHECK(install_saves == saves);
+    run_past_save();
+    CHECK(install_saves == saves + 1 && saved.rooms[0].setpoint == 2150);
 
     /* The page sets it the same way. */
     static char out[256];
@@ -723,16 +742,38 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     CHECK(web("POST", "/api/rooms/11", "name=Kitchen&setpoint=21.000000000000000000000000000001", out, sizeof out) == 400);
     CHECK(web("POST", "/api/rooms/11", "name=Bad%22&setpoint=20", out, sizeof out) == 400);
     CHECK(strcmp(gateway_room(&gw, 11)->name, "Living") == 0 && gateway_room(&gw, 11)->setpoint == 1900);
-    /* The same setpoint again: no flash write, but the device gets it again
-     * (that ends an overlay set on it). */
-    int saves = install_saves;
-    jobs_before = jobs;
-    CHECK(web("POST", "/api/rooms/11", "setpoint=19", out, sizeof out) == 200 && install_saves == saves);
-    for (int i = 0; i < 200 && jobs == jobs_before; i++)
-        run(1);
-    CHECK(jobs > jobs_before);
+    run_past_save();
     restart_from_flash();
     CHECK(gateway_room(&gw, 11)->setpoint == 1900);
+}
+
+/* The same setpoint again wakes the device only when there is something to
+ * end: an overlay set on it. */
+static void the_same_setpoint_again_only_ends_an_overlay(void)
+{
+    struct gateway_identity id = identity_with_room(5000); /* 18 C */
+    start(&id);
+    run(3);
+    int jobs_before = jobs, saves = install_saves;
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "18", 2, false);
+    CHECK(!a_job_within(jobs_before));
+
+    static const uint8_t overlay[] = {0x62, 0x80, 0x02, 0x08, 0x34, 0x62, 0x40, 0x01, 0x02, 0x62, 0x60, 0x01, 0x01};
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3501, .payload = overlay,
+                           .payload_len = sizeof overlay};
+    coap_add_path(&put, "h/4242/z/11/overlay");
+    device_sends_coap(&put, 0x73, 0x3100);
+    CHECK(a_job_within(jobs)); /* its 2.04 */
+    jobs_before = jobs;
+    gateway_command(&gw, "tado/zone/11/setpoint/set", "18", 2, false);
+    CHECK(a_job_within(jobs_before));
+    struct coap_msg write;
+    uint8_t want[64];
+    size_t wn = tado_zone_state(want, sizeof want, 1800, -1);
+    CHECK(radio_job_coap(network_key(), &write) && coap_path_is(&write, "z/s"));
+    CHECK_BYTES(write.payload, write.payload_len, want, wn);
+    run_past_save();
+    CHECK(install_saves == saves); /* unchanged: nothing to save */
 }
 
 /* A window that ends while d/pair is out does not cut the join short, and a
@@ -815,6 +856,7 @@ void run_gateway_tests(void)
     room_numbers_come_round_after_255();
     no_pair_window_with_the_device_table_full();
     a_setpoint_from_home_assistant_reaches_the_device();
+    the_same_setpoint_again_only_ends_an_overlay();
     a_join_under_way_outlasts_its_window();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();

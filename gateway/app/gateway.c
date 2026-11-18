@@ -215,6 +215,7 @@ static void save_install(struct gateway *g)
         o->zone = d->zone;
         memcpy(o->serial, d->d.serial, sizeof o->serial);
     }
+    g->save_pending = false;
     size_t n = install_encode(&in, blob, sizeof blob);
     if (n)
         g->ops.save_install(g->ops.ctx, blob, n);
@@ -271,7 +272,7 @@ static void publish_device(struct gateway *g, struct gateway_device *dev)
 static void publish_room(struct gateway *g, struct gateway_room *room)
 {
     uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
-    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_CLIMATE; e++)
+    for (int e = HA_ZONE_FIRST; e <= HA_ZONE_LAST; e++)
         if ((fresh & 1u << e) && ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload,
                                                    room->zone, room->name, e))
             publish(g);
@@ -285,7 +286,7 @@ static void publish_room(struct gateway *g, struct gateway_room *room)
  * messages, for every entity, as after a restart nothing says which went out. */
 static void unpublish_room(struct gateway *g, struct gateway_room *room)
 {
-    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_CLIMATE; e++)
+    for (int e = HA_ZONE_FIRST; e <= HA_ZONE_LAST; e++)
         if (ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload, room->zone, room->name, e)) {
             g->payload[0] = '\0';
             publish(g);
@@ -584,14 +585,19 @@ bool gateway_delete_room(struct gateway *g, uint8_t zone)
 bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
 {
     struct gateway_room *r = gateway_room(g, zone);
-    if (!r || centi < HA_SETPOINT_MIN || centi > HA_SETPOINT_MAX)
+    if (!r || !ha_setpoint_ok(centi))
         return false;
+    const struct session_zone *z = session_zone(&g->session, zone);
+    if (r->setpoint == centi && (!z || (!z->overlay && !z->writing)))
+        return true; /* the device has it already: no wake-up for nothing */
     if (r->setpoint != centi) {
         r->setpoint = centi;
-        save_install(g);
+        /* Saved once the changes stop: a slider or an automation sends many. */
+        g->save_pending = true;
+        g->save_due_ms = now(g) + GATEWAY_SAVE_DELAY_MS;
     }
-    /* Written even when unchanged: that ends an overlay set on the device.
-     * The device confirms it: its next report echoes the zone state. */
+    /* Also when unchanged, to end an overlay set on the device. The device
+     * confirms it: its next report echoes the zone state. */
     bool written = session_write_zone(&g->session, zone, now(g));
     notice(g, "room %s: setpoint %u.%02u C%s", r->name, centi / 100u, centi % 100u,
            written ? "" : " (no device yet: it gets it when it joins the room)");
@@ -716,6 +722,8 @@ void gateway_run(struct gateway *g, uint32_t timeout_ms)
     session_tick(&g->session, now(g));
     watch_pairing(g);
     publish_dirty(g);
+    if (g->save_pending && (int32_t)(now(g) - g->save_due_ms) >= 0)
+        save_install(g);
 }
 
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained)

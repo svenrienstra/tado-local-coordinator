@@ -115,8 +115,6 @@ uint32_t ha_zone_entities(const struct tado_report *z)
     return e | 1u << HA_ZONE_CLIMATE;
 }
 
-/* Degrees C with at most two decimals ("21", "21.5", "21.25") in centi-C;
- * -1 for anything else. */
 bool ha_setpoint_topic(const char *topic, unsigned *zone)
 {
     int end = 0;
@@ -224,7 +222,6 @@ static const struct entity ENTITIES[] = {
     [HA_ZONE_TEMPERATURE] = {"temperature", "Temperature", "temperature", DEGREES_C, true, false, NULL},
     [HA_ZONE_SETPOINT] = {"setpoint", "Setpoint", "temperature", DEGREES_C, true, false, NULL},
     [HA_ZONE_DEMAND] = {"demand", "Heating demand", NULL, "%", true, false, "mdi:radiator"},
-    [HA_ZONE_CLIMATE] = {"climate", NULL, NULL, NULL, false, false, NULL},
 };
 
 /* A thermostat for the room. Target and current temperature and the action
@@ -238,7 +235,8 @@ static void put_climate(struct out *o, unsigned zone, const char *uid, const cha
     put(o, "{\"name\":null,\"unique_id\":\"%s_climate\",\"modes\":[\"heat\"],", uid);
     /* Its only mode, or Home Assistant shows it as off. */
     put(o, "\"mode_state_topic\":\"%s\",\"mode_state_template\":\"heat\",", state_topic);
-    put(o, "\"temperature_command_topic\":\"%s\",", set);
+    /* One decimal, not a float as Python prints it (20.200000000000003). */
+    put(o, "\"temperature_command_topic\":\"%s\",\"temperature_command_template\":\"{{ '%%.1f' | format(value) }}\",", set);
     put(o, "\"temperature_state_topic\":\"%s\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",",
         state_topic);
     put(o, "\"current_temperature_topic\":\"%s\",\"current_temperature_template\":"
@@ -306,7 +304,7 @@ bool ha_device_discovery(char *topic, size_t tcap, char *payload, size_t pcap, c
 bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, const char *name,
                        enum ha_entity e)
 {
-    if (e < HA_ZONE_TEMPERATURE || e > HA_ZONE_CLIMATE)
+    if (e < HA_ZONE_FIRST || e > HA_ZONE_LAST)
         return false;
     char uid[24], state[32], device[160];
     snprintf(uid, sizeof uid, "tado_zone_%u", zone);

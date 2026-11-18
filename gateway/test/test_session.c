@@ -948,17 +948,40 @@ static void writes_a_new_setpoint_to_the_owner(void)
     session_tick(&s, now);
     CHECK(unicasts() == 3); /* acknowledged: not again */
 
-    /* A second change before the first was ACKed replaces it under a new MID. */
+    /* A burst of changes while the first frame waits for the device's sample:
+     * nothing more is queued; when that frame left, the newest goes, once. */
     setpoints[11] = 1900;
+    session_write_zone(&s, 11, now);
+    int first = unicast(3);
+    setpoints[11] = 1950;
     session_write_zone(&s, 11, now);
     setpoints[11] = 2000;
     session_write_zone(&s, 11, now);
-    struct coap_msg w1 = coap_of((size_t)unicast(3)), w2 = coap_of((size_t)unicast(4));
+    CHECK(unicasts() == 4);
+    tx_done(&s, first + 1, LINK_ACKED); /* handles are index + 1 */
+    CHECK(unicasts() == 5);
+    struct coap_msg w1 = coap_of((size_t)first), w2 = coap_of((size_t)unicast(4));
+    wn = tado_zone_state(want, sizeof want, 2000, -1);
     CHECK(w1.mid != w2.mid);
-    from_joiner(&s, false, &(struct coap_msg){.type = COAP_ACK, .code = COAP_CODE(2, 4), .mid = w2.mid});
+    CHECK_BYTES(w2.payload, w2.payload_len, want, wn);
+    struct coap_msg a2 = ack(w2.mid, COAP_CODE(2, 4));
+    from_joiner(&s, false, &a2);
     now += SESSION_ZONE_WRITE_TIMEOUT_MS;
     session_tick(&s, now);
-    CHECK(unicasts() == 5);
+    CHECK(unicasts() == 5); /* the newest was ACKed; the older MID is not repeated */
+
+    /* A lost TX_DONE does not hold the newest back for good. */
+    setpoints[11] = 2100;
+    session_write_zone(&s, 11, now);
+    setpoints[11] = 2200;
+    session_write_zone(&s, 11, now);
+    CHECK(unicasts() == 6);
+    now += SESSION_TX_DONE_TIMEOUT_MS;
+    session_tick(&s, now);
+    CHECK(unicasts() == 7);
+    wn = tado_zone_state(want, sizeof want, 2200, -1);
+    struct coap_msg w3 = coap_of((size_t)unicast(6));
+    CHECK_BYTES(w3.payload, w3.payload_len, want, wn);
 }
 
 void run_session_tests(void)

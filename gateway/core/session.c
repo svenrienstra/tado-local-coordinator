@@ -106,6 +106,7 @@ bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8])
     z->used = true;
     z->zone = zone;
     memcpy(z->owner, owner, 8);
+    z->write_handle = -1;
     return true;
 }
 
@@ -420,22 +421,30 @@ static void send_zone_write(struct session *s, struct session_zone *z, uint32_t 
 {
     z->write_attempts++;
     z->write_sent_ms = now;
-    send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
+    z->write_newer = false;
+    z->write_handle = send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
 }
 
-/* Writes the zone's own state, with no overlay, to its owner: a write that
- * is still unacknowledged is replaced, under a new MID. */
-static void write_zone(struct session *s, struct session_zone *z, uint32_t now)
+/* Writes the zone's own state, with no overlay, to its owner, under a new
+ * MID. While the last write's frame still waits on the CC1312 for the
+ * device's sample, it is not queued again: it goes when that frame left, so
+ * a burst of changes costs the device one wake-up, with the newest. */
+static void write_zone(struct session *s, struct session_zone *z, uint32_t now, const char *why)
 {
+    uint16_t c = setpoint_of(s, z);
+    say(s, "zone %u: %s, writing %u.%02u C to its owner", z->zone, why, c / 100u, c % 100u);
     uint8_t state[64];
-    size_t sn = tado_zone_state(state, sizeof state, setpoint_of(s, z), -1);
+    size_t sn = tado_zone_state(state, sizeof state, c, -1);
     z->overlay = false;
     z->write_mid = s->next_mid++;
     z->write_len = (uint8_t)tado_zone_state_write(z->write_packet, sizeof z->write_packet, z->zone, state, sn,
                                                   z->write_mid, s->coordinator, z->owner);
     z->writing = true;
     z->write_attempts = 0;
-    send_zone_write(s, z, now);
+    if (z->write_handle >= 0 && !elapsed(now, z->write_sent_ms, SESSION_TX_DONE_TIMEOUT_MS))
+        z->write_newer = true;
+    else
+        send_zone_write(s, z, now);
 }
 
 bool session_write_zone(struct session *s, uint8_t zone, uint32_t now)
@@ -443,9 +452,7 @@ bool session_write_zone(struct session *s, uint8_t zone, uint32_t now)
     struct session_zone *z = zone_find(s, zone);
     if (!z)
         return false;
-    uint16_t c = setpoint_of(s, z);
-    say(s, "zone %u: setpoint %u.%02u C, writing it to its owner", zone, c / 100u, c % 100u);
-    write_zone(s, z, now);
+    write_zone(s, z, now, "new setpoint");
     return true;
 }
 
@@ -457,9 +464,7 @@ static void end_overlays(struct session *s, uint32_t now)
         struct session_zone *z = &s->zones[i];
         if (!z->used || !z->overlay || !overlay_over(z, now))
             continue;
-        uint16_t c = setpoint_of(s, z);
-        say(s, "zone %u: the device's overlay ran out, back to %u.%02u C", z->zone, c / 100u, c % 100u);
-        write_zone(s, z, now);
+        write_zone(s, z, now, "the device's overlay ran out");
     }
 }
 
@@ -468,7 +473,11 @@ static void repeat_zone_writes(struct session *s, uint32_t now)
     char e[17];
     for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
         struct session_zone *z = &s->zones[i];
-        if (!z->used || !z->writing || !elapsed(now, z->write_sent_ms, SESSION_ZONE_WRITE_TIMEOUT_MS))
+        if (z->used && z->write_newer && elapsed(now, z->write_sent_ms, SESSION_TX_DONE_TIMEOUT_MS)) {
+            send_zone_write(s, z, now); /* its TX_DONE was lost: the newest goes anyway */
+            continue;
+        }
+        if (!z->used || !z->writing || z->write_newer || !elapsed(now, z->write_sent_ms, SESSION_ZONE_WRITE_TIMEOUT_MS))
             continue;
         if (z->write_attempts >= SESSION_ZONE_WRITE_ATTEMPTS) {
             say(s, "zone %u state write: no ACK from %s after %u attempts; it reads the state again within 20 min",
@@ -618,6 +627,14 @@ static void on_tx_done(struct session *s, const struct link_event *ev, uint32_t 
     for (size_t i = 0; i < SESSION_MAX_ANSWERS; i++)
         if (s->answers[i].used && s->answers[i].handle == handle)
             s->answers[i].handle = -1;
+    for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
+        struct session_zone *z = &s->zones[i];
+        if (!z->used || z->write_handle != handle)
+            continue;
+        z->write_handle = -1;
+        if (z->write_newer)
+            send_zone_write(s, z, now);
+    }
     if (handle == s->ra_handle) {
         ra_ended(s, now);
     } else if (handle == s->pair_handle) {

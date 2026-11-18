@@ -114,6 +114,8 @@ struct session_zone {
     /* The write that ends an overlay, until the device ACKs it. */
     bool writing;
     uint16_t write_mid;
+    int write_handle;               /* the write's frame still on the CC1312, or -1 */
+    bool write_newer;               /* write_packet changed while that frame waits: send on its TX_DONE */
     uint8_t write_attempts;
     uint32_t write_sent_ms;
     uint8_t write_len;
@@ -163,8 +165,9 @@ bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8]);
 
 /* The zone's setpoint changed (session_ops.setpoint has the new one): writes
  * the zone state to its owner in its next window, which ends an overlay set
- * on the device, and repeats it until the device ACKs. False when the zone is
- * not served. */
+ * on the device, and repeats it until the device ACKs. One write per zone
+ * waits on the CC1312 at a time: a newer one replaces it and goes when that
+ * frame left. False when the zone is not served. */
 bool session_write_zone(struct session *s, uint8_t zone, uint32_t now_ms);
 
 /* The zone, or NULL when it is not served. */

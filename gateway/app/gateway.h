@@ -31,6 +31,8 @@
 #define GATEWAY_CHANNEL_KHZ     868335u
 #define GATEWAY_TUNE_MAX_KHZ    40u
 #define GATEWAY_PAIR_WINDOW_S   120u
+/* How long after the last setpoint change it is saved to flash. */
+#define GATEWAY_SAVE_DELAY_MS   30000u
 /* Counters the CC1312 may use on its own (beacon answers) between two TXs. */
 #define GATEWAY_COUNTER_MARGIN  256u
 
@@ -86,6 +88,8 @@ struct gateway {
     uint8_t pair_joined[8];
     uint8_t refused[8];       /* the last device the full table turned away */
     uint8_t next_zone;        /* where a new room's number is looked for */
+    bool save_pending;        /* setpoints changed and not yet saved */
+    uint32_t save_due_ms;
 
     /* The joined devices and the rooms, with what goes to Home Assistant:
      * published at the end of gateway_run when dirty, so a device's answer
@@ -139,10 +143,11 @@ uint8_t gateway_add_room(struct gateway *g, const char *name);
 bool gateway_rename_room(struct gateway *g, uint8_t zone, const char *name);
 bool gateway_delete_room(struct gateway *g, uint8_t zone);
 
-/* Sets the room's setpoint (centi-degrees C, HA_SETPOINT_MIN..MAX), keeps it,
- * and writes it to the room's device in its next window; that ends an
- * overlay set on the device. The device's next report confirms it. False
- * for no such room or a setpoint out of range. */
+/* Sets the room's setpoint (centi-degrees C, HA_SETPOINT_MIN..MAX), saves it
+ * GATEWAY_SAVE_DELAY_MS after the last change, and writes it to the room's
+ * device in its next window, which ends an overlay set on the device; the
+ * device's next report confirms it. Nothing is written when the device has
+ * it already. False for no such room or a setpoint out of range. */
 bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi);
 
 /* Puts a joined device in a room (zone 0: none). One device per room until

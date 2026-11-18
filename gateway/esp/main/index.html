@@ -179,7 +179,7 @@ function ago(iso) {
   return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 }
 
-function deg(c) { return `${(Math.round(c * 100) / 100).toString()}°`; }
+function deg(c) { return `${Math.round(c * 100) / 100}°`; }
 
 function bigTemp(c) {
   if (c == null) return el("div", { className: "temp none", textContent: "–" });
@@ -243,13 +243,14 @@ function roomTile(r) {
   const shown = el("span");
   const show = () => { shown.textContent = `Set ${deg(setpoint(r) / 100)}`; };
   const step = (dir) => {
-    const half = setpoint(r) / 50;
-    const next = (dir > 0 ? Math.floor(half + 1e-6) + 1 : Math.ceil(half - 1e-6) - 1) * 50;
+    const c = setpoint(r); /* whole centi-degrees */
+    const next = (dir > 0 ? Math.floor(c / 50) + 1 : Math.ceil(c / 50) - 1) * 50;
     pending[r.zone] = Math.min(state.setpoint_max, Math.max(state.setpoint_min, next));
     show();
     clearTimeout(timers[r.zone]);
     timers[r.zone] = setTimeout(() => {
       const c = pending[r.zone];
+      if (c === r.setpoint) { delete pending[r.zone]; return; } /* the clicks cancelled out */
       act(`/api/rooms/${r.zone}`, { setpoint: (c / 100).toFixed(2) }).then(() => { delete pending[r.zone]; render(); });
     }, 600);
   };

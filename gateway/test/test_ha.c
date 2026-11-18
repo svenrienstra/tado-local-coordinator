@@ -97,6 +97,7 @@ static void a_room_is_a_climate_entity(void)
                  "{\"name\":null,\"unique_id\":\"tado_zone_11_climate\",\"modes\":[\"heat\"],"
                  "\"mode_state_topic\":\"tado/zone/11/state\",\"mode_state_template\":\"heat\","
                  "\"temperature_command_topic\":\"tado/zone/11/setpoint/set\","
+                 "\"temperature_command_template\":\"{{ '%.1f' | format(value) }}\","
                  "\"temperature_state_topic\":\"tado/zone/11/state\","
                  "\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\","
                  "\"current_temperature_topic\":\"tado/zone/11/state\","

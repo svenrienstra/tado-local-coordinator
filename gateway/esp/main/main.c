@@ -280,6 +280,7 @@ static void mqtt_start(void)
         .credentials.username = CONFIG_TADO_MQTT_USERNAME,
         .credentials.authentication.password = CONFIG_TADO_MQTT_PASSWORD,
         .credentials.client_id = "tado-gateway",
+        .buffer.size = 2048, /* a room's climate config is about 1 KB; the default is 1024 */
         .session.last_will = {.topic = HA_STATUS_TOPIC, .msg = HA_OFFLINE, .qos = 1, .retain = 1},
     };
     mqtt = esp_mqtt_client_init(&cfg);

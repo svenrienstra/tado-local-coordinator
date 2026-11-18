@@ -161,11 +161,15 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
         char value[32];
         enum web_field setpoint = web_form(body, len, "setpoint", value, sizeof value);
         int32_t c = setpoint == WEB_FIELD_OK ? ha_parse_centi(value, strlen(value)) : 0;
+        if (named == WEB_FIELD_OK && !install_name_ok(name, strlen(name)))
+            named = WEB_FIELD_BAD;
+        if (setpoint == WEB_FIELD_OK && !ha_setpoint_ok(c))
+            setpoint = WEB_FIELD_BAD;
         if (named == WEB_FIELD_MISSING && setpoint == WEB_FIELD_MISSING)
             return answer(o, 400, "name or setpoint required");
-        if (named == WEB_FIELD_BAD || (named == WEB_FIELD_OK && !install_name_ok(name, strlen(name))))
+        if (named == WEB_FIELD_BAD)
             return answer(o, 400, "bad name");
-        if (setpoint == WEB_FIELD_BAD || (setpoint == WEB_FIELD_OK && (c < HA_SETPOINT_MIN || c > HA_SETPOINT_MAX))) {
+        if (setpoint == WEB_FIELD_BAD) {
             char error[48];
             snprintf(error, sizeof error, "setpoint: %u-%u degrees C", HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
             return answer(o, 400, error);

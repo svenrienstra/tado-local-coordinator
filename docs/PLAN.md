@@ -427,7 +427,10 @@ setpoint (in flash, the one copy; the session asks for it), and a new one, from
 the climate entity or the setup page, goes to the room's device as `PUT
 z/s?id=<n>` on its channel sample, repeated until it is ACKed (`2.04`, or
 `2.05` as a VA01 answers, freedo `PROTOCOL.md`). That write also ends an
-overlay set on the device. The device's echo of the zone state is what Home
+overlay set on the device. One write per zone waits on the CC1312 at a time:
+a burst of changes (a slider, an automation) costs the device one wake-up,
+with the newest value; the same value again wakes it only to end an overlay.
+A setpoint is saved to flash 30 s after the last change. The device's echo of the zone state is what Home
 Assistant shows. Tested on the Mac through the CC1312 firmware; the sensor
 took the same write on air (`SENSOR.md`). Boost and home/away: not started
 (freedo `PROTOCOL.md` on overlays and away first).
