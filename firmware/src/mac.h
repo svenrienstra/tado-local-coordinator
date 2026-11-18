@@ -20,6 +20,9 @@
 #define MAC_ENH_BEACON_LEN 32
 #define MAC_BEACON_REQ_LEN 27
 
+/* The last 3 bytes of every tado EUI-64, as they go on air. */
+extern const uint8_t MAC_TADO_EUI_SUFFIX[3];
+
 /* Largest 6LoWPAN packet that still fits one frame. */
 #define MAC_UNICAST_MAX_PACKET   (MAC_MAX_FRAME - MAC_HEADER_LEN - 8 - 2 - 4)
 #define MAC_BROADCAST_MAX_PACKET (MAC_MAX_FRAME - MAC_HEADER_LEN - 2 - 2 - 4)

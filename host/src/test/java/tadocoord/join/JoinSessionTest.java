@@ -241,6 +241,18 @@ class JoinSessionTest {
     }
 
     @Test
+    void answersARepeatAgainWhenTheTxDoneOfTheFirstAnswerWasLost() throws Exception {
+        CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa340, new byte[0],
+                List.of(CoapMessage.path("z"), CoapMessage.path("p")), new byte[] {0x40, 0x60});
+        session.onEvent(fromJoiner(false, put)); // its TX_DONE never comes
+        now = now.plus(JoinSession.TX_DONE_TIMEOUT);
+        session.onEvent(fromJoiner(false, put));
+
+        assertEquals(2, sent.size());
+        assertArrayEquals(sent.get(0).packet(), sent.get(1).packet());
+    }
+
+    @Test
     void answersARepeatedRequestOnceWhileItsAnswerIsOnItsWay() throws Exception {
         CoapMessage put = new CoapMessage(CoapMessage.Type.CON, CoapMessage.code(0, 3), 0xa339, new byte[0],
                 List.of(CoapMessage.path("z"), CoapMessage.path("p")), new byte[] {0x40, 0x60});

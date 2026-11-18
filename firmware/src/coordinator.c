@@ -8,7 +8,6 @@
 const uint8_t PAIRING_KEY[16] = {'t', 'a', 'd', 'o', ' ', 'p', 'a', 'i',
                                  'r', 'i', 'n', 'g', ' ', 'k', 'e', 'y'};
 
-static const uint8_t EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 
 /* TX flags (docs/HOSTLINK.md). */
 #define TXF_PAIRING_KEY 0x01
@@ -106,7 +105,7 @@ static void schedule_job(struct coordinator *c, struct tx_job *j, uint64_t now)
         j->wake_frames = j->train == TRAIN_NONE ? 0 : MAC_TRAIN_FULL;
         return; /* starts when handed to the radio */
     }
-    uint64_t step = (uint64_t)WAKE_STEP_US * (RAT_PER_MS / 1000u);
+    uint64_t step = WAKE_STEP_RAT;
     uint64_t sample = a->sample;
     if (sample < now)
         sample += (now - sample + CSL_PERIOD_RAT - 1) / CSL_PERIOD_RAT * CSL_PERIOD_RAT;
@@ -209,8 +208,10 @@ static void tx_done(struct coordinator *c, enum tx_result result)
 
 static enum hl_status do_config(struct coordinator *c, const uint8_t *p, size_t len)
 {
-    if (len != 8 + 16 + 4 + 4 || memcmp(&p[5], EUI_SUFFIX, 3) != 0)
+    if (len != 8 + 16 + 4 + 4 || memcmp(&p[5], MAC_TADO_EUI_SUFFIX, 3) != 0)
         return HL_BAD_ARG;
+    if (!radio_supported())
+        return HL_UNSUPPORTED;
     memcpy(c->eui, p, 8);
     memcpy(c->network_key, &p[8], 16);
     c->counter = get32(&p[24]);
@@ -414,14 +415,19 @@ static void answer_beacon_request(struct coordinator *c, const uint8_t *frame, s
     hostlink_event(&c->link, HL_EV_BEACON_ANSWERED, ev, sizeof ev, NULL, 0);
 }
 
+static int32_t abs32(int32_t v) { return v < 0 ? -v : v; }
+
+static void log_signed(struct log_line *l, int32_t v)
+{
+    if (v < 0)
+        log_str(l, "-");
+    log_dec(l, (uint32_t)abs32(v));
+}
+
 /* Signed microseconds, for a timing log line. */
 static void log_us(struct log_line *l, int32_t rat)
 {
-    if (rat < 0) {
-        log_str(l, "-");
-        rat = -rat;
-    }
-    log_dec(l, (uint32_t)rat / (RAT_PER_MS / 1000u));
+    log_signed(l, rat / (int32_t)(RAT_PER_MS / 1000u));
     log_str(l, " us");
 }
 
@@ -475,15 +481,6 @@ static bool repeated_unicast(struct coordinator *c, const struct mac_data *d)
     slot->seq = d->seq;
     slot->at_ms = now;
     return false;
-}
-
-static int32_t abs32(int32_t v) { return v < 0 ? -v : v; }
-
-static void log_signed(struct log_line *l, int32_t v)
-{
-    if (v < 0)
-        log_str(l, "-");
-    log_dec(l, (uint32_t)abs32(v));
 }
 
 /* A carrier offset reading from one of our devices. */

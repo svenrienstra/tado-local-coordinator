@@ -109,6 +109,12 @@ public record Datagram(int nextHeader, Optional<byte[]> src, Optional<byte[]> ds
             }
             return new Datagram(Ipv6.NH_UDP, src, dst, sp, dp, r.rest());
         }
+        if (nextHeader == Ipv6.NH_UDP) {
+            int sp = r.u16();
+            int dp = r.u16();
+            r.skip(4); // length and checksum: the frame and its MIC bound the datagram
+            return new Datagram(Ipv6.NH_UDP, src, dst, sp, dp, r.rest());
+        }
         return new Datagram(nextHeader, src, dst, 0, 0, r.rest());
     }
 

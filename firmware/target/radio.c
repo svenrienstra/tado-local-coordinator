@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <ti/devices/DeviceFamily.h>
+#include DeviceFamily_constructPath(driverlib/chipinfo.h)
 #include DeviceFamily_constructPath(driverlib/rf_data_entry.h)
 #include DeviceFamily_constructPath(driverlib/rf_mailbox.h)
 #include DeviceFamily_constructPath(driverlib/rf_prop_mailbox.h)
@@ -17,7 +18,6 @@
 
 #define RAT_PER_US         4u
 #define RAT_PER_BYTE       (8u * 20u * RAT_PER_US) /* 50 kbps */
-#define WAKE_STEP_RAT      (WAKE_STEP_US * RAT_PER_US)
 /* The Data frame starts this long after the last wake-up frame ends, as the
  * commercial bridge's (measured on our radio): 0.52 ms for a broadcast, a median
  * 0.82 ms for a unicast. A device wakes on the rendezvous the train announced
@@ -248,6 +248,11 @@ static void set_tx(rfc_CMD_PROP_TX_t *cmd, const uint8_t *frame, size_t len, uin
         .syncWord = RF_SYNC_WORD,
         .pPkt = (uint8_t *)frame,
     };
+}
+
+bool radio_supported(void)
+{
+    return ChipInfo_GetHwRevision() >= HWREV_2_1;
 }
 
 void radio_init(void)

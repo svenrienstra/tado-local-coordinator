@@ -30,6 +30,7 @@ reply is a status:
 | `0x02` | not configured (send `CONFIG` first) |
 | `0x03` | busy (TX queue full) |
 | `0x04` | unknown type |
+| `0x05` | unsupported silicon: `CONFIG` on a CC13x2 older than rev E (PG2.1), which lacks the per-frame frequency offset the RX path reads |
 
 A request identical to the previous one (same `seq` and same CRC) is a
 retransmission: the CC1312 re-sends the cached reply and does not execute it

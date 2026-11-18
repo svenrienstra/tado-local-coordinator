@@ -48,6 +48,14 @@ public final class Main {
      * measured 2026-11-17); it includes the board's crystal error.
      */
     public static final int CHANNEL_KHZ = 868_335;
+    /**
+     * How far a kept carrier may sit from CHANNEL_KHZ: the firmware's TUNE_MAX_HZ. The firmware
+     * caps a retune against the CONFIG frequency of its run, so without this cap here a kept
+     * carrier could walk a further 40 kHz every run.
+     */
+    static final int TUNE_MAX_KHZ = 40;
+    /** The frame counter is 32 bits; one is never reused under the same network key. */
+    static final long COUNTER_LIMIT = 0xffff_ffffL;
     /** Counter values reserved per run, as freedo does: never reuse one after a restart. */
     static final long COUNTER_BLOCK = 4096;
     /** serve runs for days; this outlasts that at a frame a second (32-bit counter: 4096 such runs). */
@@ -144,8 +152,8 @@ public final class Main {
             return loadOrCreate(file, COUNTER_BLOCK);
         }
 
-        /** Reserves {@code block} frame counter values for this run. */
-        static Identity loadOrCreate(Path file, long block) throws IOException {
+        /** Reserves {@code block} frame counter values for this run (0 for a run that sends nothing secured). */
+        public static Identity loadOrCreate(Path file, long block) throws IOException {
             Properties p = new Properties();
             if (Files.exists(file)) {
                 try (InputStream in = Files.newInputStream(file)) {
@@ -165,8 +173,12 @@ public final class Main {
             }
             Identity id = new Identity(Eui.ofHex(p.getProperty("coordinator_eui")),
                     Hex.parse(p.getProperty("network_key")), Long.parseLong(p.getProperty("counter_floor")),
-                    Integer.parseInt(p.getProperty("channel_khz", Integer.toString(CHANNEL_KHZ))),
+                    keptChannel(Integer.parseInt(p.getProperty("channel_khz", Integer.toString(CHANNEL_KHZ)))),
                     Long.parseLong(p.getProperty("home_id")));
+            if (id.counterFloor + block > COUNTER_LIMIT) {
+                throw new IllegalStateException("frame counters used up (floor " + id.counterFloor
+                        + "): the devices would drop our frames as replays; pair them to a new network key");
+            }
             // Reserve this run's block before the first frame goes out.
             p.setProperty("counter_floor", Long.toString(id.counterFloor + block));
             store(file, p);
@@ -179,8 +191,13 @@ public final class Main {
             try (InputStream in = Files.newInputStream(file)) {
                 p.load(in);
             }
-            p.setProperty("channel_khz", Integer.toString(khz));
+            p.setProperty("channel_khz", Integer.toString(keptChannel(khz)));
             store(file, p);
+        }
+
+        /** A kept carrier, held within TUNE_MAX_KHZ of CHANNEL_KHZ. */
+        static int keptChannel(int khz) {
+            return Math.max(CHANNEL_KHZ - TUNE_MAX_KHZ, Math.min(CHANNEL_KHZ + TUNE_MAX_KHZ, khz));
         }
 
         private static void store(Path file, Properties p) throws IOException {

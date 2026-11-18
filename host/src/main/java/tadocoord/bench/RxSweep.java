@@ -14,7 +14,7 @@ import tadocoord.link.SerialTransport;
  * several interleaved rounds, and counts good-CRC and bad-CRC frames (the CC1312's {@code rx_ok}
  * and {@code rx_crc_fail}). Works best with plenty of traffic on air, such as the commercial bridge's.
  * The middle of the clean band is the frequency to use; on our first board it was 868.335 MHz.
- * Sends nothing secured, so it spends no frame counters.
+ * Sends nothing secured, so it reserves no frame counters.
  *
  * <p>{@code RxSweep <port> <seconds per step> <rounds> <kHz>...}
  */
@@ -24,7 +24,7 @@ public final class RxSweep {
             System.err.println("usage: RxSweep <port> <seconds per step> <rounds> <kHz>...");
             System.exit(2);
         }
-        Main.Identity id = Main.Identity.loadOrCreate(Path.of("state/coordinator.properties"));
+        Main.Identity id = Main.Identity.loadOrCreate(Path.of("state/coordinator.properties"), 0);
         int dwell = Integer.parseInt(args[1]);
         int rounds = Integer.parseInt(args[2]);
         AtomicReference<long[]> rssi = new AtomicReference<>(new long[2]); // sum, count

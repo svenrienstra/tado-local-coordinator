@@ -163,8 +163,9 @@ public final class ConfigDocuments {
         byte[] tag = etag(document);
         int block = request.options().stream().filter(o -> o.number() == BLOCK2).findFirst()
                 .map(o -> unsigned(o.value())).orElse(MAX_SZX);
-        int num = block >>> 4;
         int szx = Math.min(block & 7, MAX_SZX);
+        // RFC 7959 2.4: in smaller blocks, the asked block starts at our block NUM << (size step).
+        int num = (block >>> 4) << ((block & 7) - szx);
         Optional<byte[]> held = request.options().stream().filter(o -> o.number() == ETAG)
                 .map(Option::value).findFirst();
         List<Option> options = new ArrayList<>();

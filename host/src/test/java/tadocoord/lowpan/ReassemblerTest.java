@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -75,6 +76,32 @@ class ReassemblerTest {
 
         assertThrows(IllegalArgumentException.class, () -> r.add(sensor, overlapping, t0));
         assertTrue(r.add(sensor, FRAGN, t0).isEmpty()); // FRAG1 went with the dropped datagram
+    }
+
+    @Test
+    void reassemblesADatagramWhoseUdpHeaderIsCarriedInline() {
+        // IPHC with next header 17 inline (no NHC): the 8-byte UDP header travels as is.
+        byte[] payload = new byte[80];
+        Arrays.fill(payload, (byte) 0x5a);
+        byte[] head = HexFormat.of().parseHex("7b3311" + "1633163300580000");
+        int size = 40 + 8 + payload.length; // 128
+        byte[] frag1 = concat(new byte[] {(byte) 0xc0, (byte) size, 0, 7}, head, Arrays.copyOf(payload, 32));
+        byte[] fragN = concat(new byte[] {(byte) 0xe0, (byte) size, 0, 7, (byte) ((48 + 32) / 8)},
+                Arrays.copyOfRange(payload, 32, payload.length));
+
+        assertTrue(r.add(sensor, frag1, t0).isEmpty());
+        Datagram d = Datagram.parse(r.add(sensor, fragN, t0).orElseThrow(), sensor, Optional.of(coordinator));
+
+        assertEquals(5683, d.dstPort());
+        assertArrayEquals(payload, d.payload());
+    }
+
+    private static byte[] concat(byte[]... parts) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        for (byte[] p : parts) {
+            out.writeBytes(p);
+        }
+        return out.toByteArray();
     }
 
     @Test

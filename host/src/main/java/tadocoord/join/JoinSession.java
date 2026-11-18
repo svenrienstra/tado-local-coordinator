@@ -100,6 +100,7 @@ public final class JoinSession {
         final byte[] packet;
         final Instant at;
         int handle; // -1 once the radio is done with it
+        Instant sent; // when it last went to the radio
 
         Answer(byte[] packet, Instant at) {
             this.packet = packet;
@@ -271,9 +272,11 @@ public final class JoinSession {
         Answer earlier = m.type() == CoapMessage.Type.CON ? answers.get(exchange) : null;
         if (earlier != null) {
             // A repeat: the same answer again, unless it is still on its way.
-            if (earlier.handle < 0) {
+            // A lost TX_DONE must not hold the answer back for its whole lifetime.
+            if (earlier.handle < 0 || !clock.instant().isBefore(earlier.sent.plus(TX_DONE_TIMEOUT))) {
                 progress.accept("%s from %s again, answering it again".formatted(path, rx.src()));
                 earlier.handle = send(TxRequest.unicast(rx.src(), TxRequest.TRAIN_ANCHORED, earlier.packet));
+                earlier.sent = clock.instant();
             }
             return;
         }
@@ -346,18 +349,27 @@ public final class JoinSession {
             return roles.isEmpty() ? Optional.empty()
                     : Optional.of(ConfigDocuments.deviceConfig(installation.homeId(), roles));
         }
-        if (s.length == 5 && s[0].equals("h") && s[1].equals(Long.toString(installation.homeId()))
-                && s[2].equals("z") && s[3].matches("\\d+")) {
-            int zone = Integer.parseInt(s[3]);
-            Eui owner = installation.zoneOwners().get(zone);
+        return zonePath(path).flatMap(z -> {
+            Eui owner = installation.zoneOwners().get(z.zone());
             if (owner == null) {
                 return Optional.empty();
             }
-            return switch (s[4]) {
+            return switch (z.leaf()) {
                 case "config" -> Optional.of(ConfigDocuments.zoneWithOwner(owner));
-                case "s" -> Optional.of(ConfigDocuments.zoneState(installation.setpoint(zone), overlay(zone)));
+                case "s" -> Optional.of(ConfigDocuments.zoneState(installation.setpoint(z.zone()), overlay(z.zone())));
                 default -> Optional.empty();
             };
+        });
+    }
+
+    private record ZonePath(int zone, String leaf) {}
+
+    /** {@code h/<our home>/z/<n>/<leaf>}, or empty for any other path. */
+    private Optional<ZonePath> zonePath(String path) {
+        String[] s = path.split("/");
+        if (s.length == 5 && s[0].equals("h") && s[1].equals(Long.toString(installation.homeId()))
+                && s[2].equals("z") && s[3].matches("\\d{1,9}")) {
+            return Optional.of(new ZonePath(Integer.parseInt(s[3]), s[4]));
         }
         return Optional.empty();
     }
@@ -368,12 +380,11 @@ public final class JoinSession {
      * it. It carries no end: the zone keeps it for the installation's device overlay time.
      */
     private void onDeviceOverlay(Eui device, String path, byte[] body) {
-        String[] s = path.split("/");
-        if (s.length != 5 || !s[0].equals("h") || !s[1].equals(Long.toString(installation.homeId()))
-                || !s[2].equals("z") || !s[3].matches("\\d+") || !s[4].equals("overlay")) {
+        Optional<ZonePath> z = zonePath(path).filter(p -> p.leaf().equals("overlay"));
+        if (z.isEmpty()) {
             return;
         }
-        int zone = Integer.parseInt(s[3]);
+        int zone = z.get().zone();
         if (!device.equals(installation.zoneOwners().get(zone))) {
             progress.accept("overlay on zone %d from %s, which does not own it: ignored".formatted(zone, device));
             return;
@@ -461,6 +472,7 @@ public final class JoinSession {
     private void answer(Exchange exchange, byte[] packet) throws IOException {
         Answer a = new Answer(packet, clock.instant());
         a.handle = send(TxRequest.unicast(exchange.device(), TxRequest.TRAIN_ANCHORED, packet));
+        a.sent = a.at;
         answers.put(exchange, a);
     }
 

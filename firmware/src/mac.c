@@ -10,6 +10,8 @@
 #define FCF_DATA              0x69, 0xec
 #define FCF_DATA_PENDING      0x79, 0xec
 #define FCF_BCAST             0x49, 0xe8
+
+const uint8_t MAC_TADO_EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 #define FCF_BCAST_PENDING     0x59, 0xe8
 #define FCF_BEACON_REQ        0x0b, 0xe8
 #define FCF_ENH_BEACON        0x18, 0xec
@@ -210,13 +212,12 @@ bool mac_data_addressed_to(const uint8_t *f, size_t len, enum mac_kind kind,
 bool mac_ack_request(const uint8_t *f, size_t len, const uint8_t eui[8], uint8_t *seq,
                      uint8_t src[8])
 {
-    static const uint8_t tado_suffix[3] = {0xc5, 0x1b, 0x00};
     if (mac_classify(f, len) != MAC_KIND_UNICAST ||
         !mac_data_addressed_to(f, len, MAC_KIND_UNICAST, eui) || !(f[0] & FCF0_ACK_REQUEST))
         return false;
     *seq = f[2];
     memcpy(src, &f[11], 5);
-    memcpy(&src[5], tado_suffix, 3);
+    memcpy(&src[5], MAC_TADO_EUI_SUFFIX, 3);
     return true;
 }
 

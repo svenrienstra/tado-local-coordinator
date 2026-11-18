@@ -49,6 +49,9 @@ unsigned radio_abort_job(void);
 /* Whether anything is on air or posted: a job, an ACK or a beacon answer.
  * radio_set_channel would cut it off. */
 bool radio_busy(void);
+/* Whether the silicon appends the frequency-offset byte the RX path reads
+ * (rf_settings.c): rev E (PG2.1) and later. CONFIG is refused otherwise. */
+bool radio_supported(void);
 /* Frames the RF core received since boot with a good and with a bad CRC. */
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 
@@ -67,6 +70,7 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 /* Wake-up frame spacing, 12.4 rendezvous units: the commercial bridge's,
  * measured on our radio (2026-11-17). Rounded up to whole ms for budgets. */
 #define WAKE_STEP_US          3968u
+#define WAKE_STEP_RAT         (WAKE_STEP_US * (RAT_PER_MS / 1000u))
 #define WAKE_STEP_MS          4u
 #define JOB_MARGIN_MS         50u /* chain setup, gap before Data, PHY overhead */
 /* A job reaches the radio this long before its first frame: posting it aborts

@@ -13,7 +13,7 @@
 #define HL_MAX_PAYLOAD (HL_MAX_BODY - 2)
 #define HL_MAX_FRAME   (HL_MAX_BODY + 6)
 #define HL_REPLY_FLAG  0x80
-/* Reply payload after the status byte; the largest is STATS, 12 u32. */
+/* Reply payload after the status byte; the largest is STATS, 15 u32. */
 #define HL_MAX_REPLY   64
 
 enum hl_status {
@@ -22,6 +22,7 @@ enum hl_status {
     HL_NOT_CONFIGURED = 0x02,
     HL_BUSY = 0x03,
     HL_UNKNOWN = 0x04,
+    HL_UNSUPPORTED = 0x05, /* silicon older than rev E (radio_supported) */
 };
 
 /* Executes one request. Writes the reply payload after the status byte into

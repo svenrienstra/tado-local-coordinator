@@ -55,6 +55,17 @@ class ConfigDocumentsTest {
     }
 
     @Test
+    void aLaterBlockAskedInTheLargerSizeStartsWhereThatBlockStarts() {
+        byte[] doc = ConfigDocuments.zoneWithOwner(sensor);
+        CoapMessage answer = answerTo(get(1 << 4 | 3, null), doc); // block 1 of 128: bytes 128..
+
+        int block = unsigned(option(answer, ConfigDocuments.BLOCK2));
+        assertEquals(2, block >>> 4); // block 2 of 64
+        assertEquals(2, block & 7);
+        assertArrayEquals(java.util.Arrays.copyOfRange(doc, 128, Math.min(192, doc.length)), answer.payload());
+    }
+
+    @Test
     void answers203WhenTheDeviceAlreadyHoldsTheDocument() {
         byte[] doc = ConfigDocuments.deviceConfig(42, List.of());
         CoapMessage answer = answerTo(get(0x03, ConfigDocuments.etag(doc)), doc);

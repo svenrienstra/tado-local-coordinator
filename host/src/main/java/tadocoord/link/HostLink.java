@@ -36,6 +36,7 @@ public final class HostLink implements Closeable, Radio {
     static final int ATTEMPTS = 4;
     /** Reply status: TX queue full. Frees up as queued trains (about 1 s each) leave the radio. */
     static final int STATUS_BUSY = 0x03;
+    static final int STATUS_UNSUPPORTED = 0x05;
     static final long BUSY_RETRY_MS = 100;
     static final long BUSY_TIMEOUT_MS = 8_000;
 
@@ -226,7 +227,8 @@ public final class HostLink implements Closeable, Radio {
         private final int status;
 
         LinkException(int type, int status) {
-            super("request 0x%02x failed with status 0x%02x".formatted(type, status));
+            super("request 0x%02x failed with status 0x%02x%s".formatted(type, status,
+                    status == STATUS_UNSUPPORTED ? " (CC13x2 older than rev E: not supported)" : ""));
             this.status = status;
         }
 

@@ -119,6 +119,8 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frame
 
 static bool radio_on_air; /* radio_busy(): a frame on air or posted */
 bool radio_busy(void) { return radio_on_air; }
+static bool radio_old_silicon; /* radio_supported() is false */
+bool radio_supported(void) { return !radio_old_silicon; }
 unsigned radio_abort_job(void)
 {
     job_aborts++;
@@ -397,6 +399,17 @@ static void test_coordinator_beacon_window(void)
     host_request(&c, 1, HL_CONFIG, cfg, sizeof cfg);
     const uint8_t *r = host_frame(HL_CONFIG | HL_REPLY_FLAG, 0, &len);
     CHECK(r && r[0] == HL_BAD_ARG);
+
+    /* Silicon without the frequency-offset byte would lose every frame's last
+     * byte: CONFIG is refused and the coordinator stays unconfigured. */
+    reset_stubs();
+    radio_old_silicon = true;
+    memcpy(cfg, V("in.coord_eui")->data, 8);
+    host_request(&c, 1, HL_CONFIG, cfg, sizeof cfg);
+    r = host_frame(HL_CONFIG | HL_REPLY_FLAG, 0, &len);
+    CHECK(r && r[0] == HL_UNSUPPORTED);
+    CHECK(!c.configured);
+    radio_old_silicon = false;
     configure(&c, 13537);
 
     /* Window closed: no answer, the request is reported as unverified. */
