@@ -19,10 +19,10 @@ HOST_CFLAGS := -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -g -fsanitiz
 test: $(BUILD)/test
 	$(BUILD)/test ../golden $(FREEDO)
 
-$(BUILD)/test: $(CORE) $(SHARED) $(PEER) test/test_main.c test/test_session.c test/test_hlc.c test/harness.h ../firmware/test/aes_soft.c $(wildcard core/*.h) $(wildcard $(FW)/*.h)
+$(BUILD)/test: $(CORE) $(SHARED) $(PEER) test/test_main.c test/test_session.c test/test_hlc.c test/harness.h ../firmware/test/harness.c ../firmware/test/harness.h ../firmware/test/aes_soft.c $(wildcard core/*.h) $(wildcard $(FW)/*.h)
 	@mkdir -p $(BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(CORE) $(SHARED) $(PEER) test/test_main.c test/test_session.c test/test_hlc.c \
-		../firmware/test/aes_soft.c
+		../firmware/test/harness.c ../firmware/test/aes_soft.c
 
 clean:
 	rm -rf $(BUILD)

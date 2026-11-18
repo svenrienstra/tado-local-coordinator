@@ -37,9 +37,9 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefine
 test: $(BUILD)/test
 	$(BUILD)/test ../golden/vectors.txt
 
-$(BUILD)/test: $(CORE) test/test_main.c test/aes_soft.c $(wildcard src/*.h)
+$(BUILD)/test: $(CORE) test/test_main.c test/harness.c test/harness.h test/aes_soft.c $(wildcard src/*.h)
 	@mkdir -p $(BUILD)
-	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(CORE) test/test_main.c test/aes_soft.c
+	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(CORE) test/test_main.c test/harness.c test/aes_soft.c
 
 # --- target ------------------------------------------------------------------
 

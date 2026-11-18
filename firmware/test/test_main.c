@@ -5,70 +5,11 @@
 #include <string.h>
 
 #include "ccm.h"
+#include "harness.h"
 #include "coordinator.h"
 #include "crc.h"
 #include "hostlink.h"
 #include "mac.h"
-
-static int failures, checks;
-
-#define CHECK(cond)                                                                \
-    do {                                                                           \
-        checks++;                                                                  \
-        if (!(cond)) {                                                             \
-            failures++;                                                            \
-            fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        }                                                                          \
-    } while (0)
-
-#define CHECK_BYTES(got, got_len, want, want_len)                                  \
-    CHECK((got_len) == (want_len) && memcmp((got), (want), (want_len)) == 0)
-
-/* Checks bytes against the whole golden vector of that name. */
-#define CHECK_VEC(got, got_len, name)                                              \
-    do {                                                                           \
-        const struct vec *want_ = V(name);                                         \
-        CHECK_BYTES(got, got_len, want_->data, want_->len);                        \
-    } while (0)
-
-/* --- golden vectors ----------------------------------------------------- */
-
-struct vec {
-    char name[64];
-    uint8_t data[256];
-    size_t len;
-};
-static struct vec vecs[64];
-static size_t nvecs;
-
-static void load_vectors(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        perror(path);
-        exit(2);
-    }
-    char line[1024], hex[1024];
-    while (fgets(line, sizeof line, f)) {
-        struct vec *v = &vecs[nvecs];
-        if (line[0] == '#' || sscanf(line, "%63s %1023s", v->name, hex) != 2)
-            continue;
-        v->len = strlen(hex) / 2;
-        for (size_t i = 0; i < v->len; i++)
-            sscanf(&hex[2 * i], "%2hhx", &v->data[i]);
-        nvecs++;
-    }
-    fclose(f);
-}
-
-static const struct vec *V(const char *name)
-{
-    for (size_t i = 0; i < nvecs; i++)
-        if (strcmp(vecs[i].name, name) == 0)
-            return &vecs[i];
-    fprintf(stderr, "missing vector %s\n", name);
-    exit(2);
-}
 
 /* --- platform stubs ----------------------------------------------------- */
 
