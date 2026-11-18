@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "bootloader_random.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_event.h"
@@ -122,7 +123,7 @@ static void gw_log(void *ctx, const char *line)
 static void gw_rng(void *ctx, uint8_t *out, size_t n)
 {
     (void)ctx;
-    esp_fill_random(out, n); /* a true RNG once WiFi runs */
+    esp_fill_random(out, n); /* a true RNG while WiFi runs (and see app_main) */
 }
 
 static uint32_t gw_unix(void *ctx)
@@ -349,17 +350,20 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs));
     commands = xQueueCreate(8, sizeof(struct command));
 
-    wifi_start(); /* first: with the radio on, esp_fill_random is a true RNG */
-
     struct gateway_identity id = {0};
     if (!load_identity(&id)) {
+        /* The network key must be truly random: without WiFi running yet, the
+         * RNG needs its entropy source switched on (esp_random.h). */
+        bootloader_random_enable();
         gateway_new_identity(&id, gw_rng, NULL);
+        bootloader_random_disable();
         save_identity(&id);
         ESP_LOGW(TAG, "new identity: home %lu; devices must be paired to it", (unsigned long)id.home_id);
     }
     ESP_LOGI(TAG, "home %lu, %u zone(s), counter floor %lu", (unsigned long)id.home_id, (unsigned)id.n_zones,
              (unsigned long)id.counter_floor);
 
+    wifi_start();
     cc1312_init();
     static const struct gateway_ops ops = {.log = gw_log,
                                            .rng = gw_rng,

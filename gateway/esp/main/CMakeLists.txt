@@ -11,5 +11,5 @@ idf_component_register(
          # opens no frames itself yet, so ccm and mac stay out.
          "${FW}/crc.c" "${FW}/hlframe.c"
     INCLUDE_DIRS "${GATEWAY}/core" "${GATEWAY}/app" "${FW}"
-    PRIV_REQUIRES esp_driver_uart esp_driver_gpio esp_wifi esp_netif esp_event esp_timer nvs_flash
+    PRIV_REQUIRES esp_driver_uart esp_driver_gpio esp_wifi esp_netif esp_event esp_timer nvs_flash bootloader_support
 )
