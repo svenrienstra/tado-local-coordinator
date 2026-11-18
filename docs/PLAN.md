@@ -229,8 +229,8 @@ from our own captures.
   circuit: it observes each zone owner's demand, takes the maximum over the
   zones of its circuit, and drives the boiler. The coordinator never writes a
   boiler setpoint; it only binds each heating zone to the thermostat's circuit
-  in the zone document. (freedo can also cap the flow temperature; later, if
-  wanted.) The thermostat also carries the hot water zone.
+  in the zone document, and can cap the flow temperature (M4). The
+  thermostat also carries the hot water zone.
 - **Devices do not talk directly.** Every device sleeps between CSL windows, so
   zone traffic (measures, demand, setpoint echoes) goes through the coordinator,
   which forwards each message byte for byte into the recipient's next window.
@@ -530,6 +530,46 @@ the issue's, where the id is **80 (`ebus_a`)**; freedo's table puts 0, 1, 5-9,
   freedo), so it is mostly gateway work for whoever wants it later. Open: in
   freedo's example the thermostat owns its hot-water zone (role `0d`); does
   it need that zone when hot water control is not used?
+
+**The boiler in Home Assistant**, from freedo `PROTOCOL.md` ("Flow limit",
+"Boiler link tags", "Boiler energy"). There is no boiler PID to tune: the
+thermostat picks the control setpoint and fires the burner; the boiler's own
+settings (heating curve, pump, anti-cycling) stay on its menu.
+- Decode the thermostat's boiler reports and publish them as sensors (today
+  the gateway drops every `hvac/*` report). `hvac/mon`: burner `0457` (0/1),
+  modulation `0452` (%), flame current `0458` (0.1 uA), control setpoint
+  `0450`, `044c` (a temperature, 39 to 46 C during a burn; freedo has not
+  resolved it), hot water temperature `045a`, its setpoint `045b`.
+  `hvac/config`: storage tank or instantaneous (`046c`/`046d`), the hot water
+  setpoint maximum `0471`, the flow limit read back `046f`. `c/<N>/act`: the
+  circuit's demand (`2090`).
+- Reports carry only changed values: 4 to 48 s apart while the burner runs,
+  none between burns, the modulation alone up to 120 s unreported. Keep the
+  last value of each; an energy estimate (as freedo's) needs the boiler's
+  output entered by hand (no tag carries the capacity) and cannot tell
+  heating from hot water.
+- Faults: `hvac/codes` tag `0460`, one TLV per code, a big-endian u32 of 1 to
+  4 bytes. High half `ffff`: a diagnostic code in the low half; `ff00`: a
+  fault with an unknown code; else a fault with its code in the high half; 0
+  or more than 4 bytes: a fault, code unknown. A problem sensor in Home
+  Assistant with the code, and the code in `tado/gateway/log`.
+- Burner starts and hours (`hvac/maint` `0464`-`0468`) were unsupported on
+  freedo's boiler; publish them only when reported.
+- freedo's tag names come from OpenTherm (the thermostat reads OT ids). Our
+  plant is eBUS: freedo #37 shows the values arrive (flow 55.5, return 49,
+  control setpoint 68, outside 6.25 C on the same Vaillant), but which tag
+  carries flow and which return is to be read from our own capture before
+  naming the sensors.
+- **Flow limit** on the setup page: tag `2040` in `h/<home>/c/<N>/config`,
+  whole degrees, 30 to 75 C as freedo allows; the thermostat passes it to
+  the boiler as its maximum flow temperature (OT MaxTSet), otherwise caps at
+  what the boiler offers or 70 C. Check it against the `046f` read-back. A
+  lower cap keeps the return low and the boiler condensing.
+- **Room controller gains** (`6080` Kp, `60a0` Ki, `60c0` Kd in the zone
+  document; today fixed at 1000, 500, 1500): per room under an advanced
+  setting, with our own bounds, since the valve takes any value unclamped.
+  A change is a new zone document (new ETag), which the devices read within
+  the hour. The thermostat reads them only with zone control (`6400`) on.
 
 ### M5 — Home Assistant polish  *(optional / later)*
 Pairing and device removal from Home Assistant, more device features (battery,
