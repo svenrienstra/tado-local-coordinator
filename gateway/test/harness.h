@@ -38,5 +38,6 @@ const struct vec *V(const char *name);
 size_t unhex(const char *hex, uint8_t *out, size_t cap);
 
 void run_session_tests(void);
+void run_hlc_tests(void);
 
 #endif

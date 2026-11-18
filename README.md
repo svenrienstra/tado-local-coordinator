@@ -8,7 +8,9 @@ HomeKit, no key extraction.
 > Status: **M-1 and M0 pass on air** (2026-11-17). A tado wireless temperature
 > sensor joined our network with our key, and the CC1312 firmware plus the Java
 > bench tool keep it served: Enhanced ACKs, reports, `time`, and replies behind
-> short trains on its channel sample. See [`docs/PLAN.md`](docs/PLAN.md).
+> short trains on its channel sample. **M1** (2026-11-18): the ESP gateway's
+> protocol core is written and tested in C (`gateway/`); the ESP application
+> around it is M2. See [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Why this can work without recovering any key
 

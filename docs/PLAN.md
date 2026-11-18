@@ -354,6 +354,16 @@ these windows (ESP32 + CC1101), so this is expected to pass; if it does not,
 reconsider an ESP32+CC1101 radio (freedo's path).
 
 ### M1 — Gateway protocol core  *(no radio; parallel)*
+**Done (2026-11-18)**, in [`gateway/core`](../gateway/README.md): every datagram
+and document byte for byte against freedo's and the Java host's builders;
+freedo's 370 captured frames and all our host-link captures (1082 `RX`, 887
+CoAP, 179 ICMPv6, fragments, 435 reports) parse with nothing rejected; the
+host-link client tested against the CC1312 firmware itself. Deliberate
+departures from the Java host: one always-on session that serves and pairs on
+command (Java has a join run and a serve run); FNV-1a 64 for the ETag and the
+session id (the Java host follows); after a failed pair window the Router
+Advertisement goes once, under the network key.
+
 The ESP gateway's protocol code in C (6LoWPAN, CoAP, tado resources, report
 decoding), built and tested on the Mac like `firmware/`'s `make test`. Replay
 freedo `testdata` + our own captures through it and match freedo's parsing.

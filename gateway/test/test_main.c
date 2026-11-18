@@ -277,6 +277,26 @@ static void test_reasm_sensor_report(void)
     CHECK(out == plain && len == sizeof plain);
 }
 
+/* A FRAG1 may hold the whole datagram, on any byte boundary; one that leaves
+ * bytes to later fragments must end on an 8-byte unit. */
+static void test_reasm_one_fragment_holds_it_all(void)
+{
+    static struct reasm r;
+    uint8_t coap[13] = {0x40, 0x01, 0x12, 0x34, 0xb4, 't', 'i', 'm', 'e', 0xff, 1, 2, 3};
+    uint8_t packet[64];
+    size_t pn = lowpan_udp(packet, sizeof packet, SENSOR, COORD, 5683, 5683, coap, sizeof coap);
+    size_t size = 40 + 8 + sizeof coap; /* 61: not a multiple of 8 */
+    uint8_t f1[4 + 64] = {(uint8_t)(0xc0 | size >> 8), (uint8_t)size, 0, 9};
+    memcpy(&f1[4], packet, pn);
+    const uint8_t *out;
+    size_t len;
+    CHECK(reasm_add(&r, SENSOR, f1, 4 + pn, 0, &out, &len) == REASM_WHOLE);
+    CHECK_BYTES(out, len, packet, pn);
+
+    f1[1] = (uint8_t)(size + 8); /* now it claims 8 more bytes after an odd end */
+    CHECK(reasm_add(&r, SENSOR, f1, 4 + pn, 0, &out, &len) == REASM_DROPPED);
+}
+
 static void test_reasm_inline_udp_header(void)
 {
     /* IPHC with next header 17 inline: FRAG1 stands for 40 + 8 + 32 = 80 bytes. */
@@ -334,15 +354,14 @@ static void test_tado_documents(void)
     CHECK_VEC(uri, strlen(uri), "doc.zone_uri");
     CHECK(!tado_zone_uri(uri, 20, device()));
 
-    /* TLVs: the last of a tag wins; a value running past the body is malformed. */
-    const uint8_t *v;
-    size_t vlen;
-    CHECK(tado_tlv_find(doc, n, 0x6280, &v, &vlen) && tado_tlv_uint(v, vlen) == 2100);
-    CHECK(!tado_tlv_find(doc, n, 0x6440, &v, &vlen));
+    /* Read back: the overlay is there; the last of a tag wins; a value running
+     * past the body is malformed. */
+    struct tado_report r;
+    CHECK(tado_report_decode(doc, n, &r) && r.overlay_setpoint == 2100 && r.setpoint == 1800);
     static const uint8_t twice[] = {0x62, 0x40, 1, 2, 0x62, 0x40, 1, 0};
-    CHECK(tado_tlv_find(twice, sizeof twice, 0x6240, &v, &vlen) && tado_tlv_uint(v, vlen) == 0);
+    CHECK(tado_report_decode(twice, sizeof twice, &r) && r.overlay == 0);
     static const uint8_t past[] = {0x62, 0x80, 2, 0x08};
-    CHECK(!tado_tlv_find(past, sizeof past, 0x6280, &v, &vlen));
+    CHECK(!tado_report_decode(past, sizeof past, &r));
 }
 
 static void test_tado_block_answers(void)
@@ -404,6 +423,41 @@ static void test_tado_resources(void)
     n = tado_zone_state_write(out, sizeof out, 11, state, sn, 0x1234, coord(), device());
     CHECK_VEC(out, n, "res.zone_state_write");
     CHECK(tado_zone_state_write(out, n - 1, 11, state, sn, 0x1234, coord(), device()) == 0);
+}
+
+/* The sensor's reports as captured on 2026-11-17 (docs/SENSOR.md). */
+static void test_tado_reports(void)
+{
+    uint8_t b[64];
+    struct tado_report r;
+    size_t n;
+
+    /* z/p: zone temperature 18.70 C, demand 100 %, humidity 54.7 %. */
+    n = unhex("406002074e40a001640135020223", b, sizeof b);
+    CHECK(tado_report_decode(b, n, &r));
+    CHECK(r.fields == (TADO_ZONE_TEMPERATURE | TADO_DEMAND | TADO_HUMIDITY));
+    CHECK(r.zone_temperature == 1870 && r.demand == 100 && r.humidity == 547);
+
+    /* d/<serial>/sen: battery 4186 mV, 17.78 C calibrated and raw, 58.0 %, light 4. */
+    n = unhex("016202105a012d0206f2012e0206f2013502024401360104", b, sizeof b);
+    CHECK(tado_report_decode(b, n, &r));
+    CHECK(r.battery_mv == 4186 && r.temperature == 1778 && r.temperature_raw == 1778 && r.humidity == 580);
+    CHECK(r.light == 4 && (r.fields & TADO_LIGHT));
+
+    /* h/<home>/z/11/act: demand 94 %. */
+    n = unhex("40a0015e", b, sizeof b);
+    CHECK(tado_report_decode(b, n, &r) && r.fields == TADO_DEMAND && r.demand == 94);
+
+    /* The z/s echo while 20 C was set on the sensor over the zone's 18 C. */
+    n = unhex("62800207d06240010262600101620002070861e0010161600101618001006020010162e00100", b, sizeof b);
+    CHECK(tado_report_decode(b, n, &r));
+    CHECK(r.overlay_setpoint == 2000 && r.overlay == TADO_OVERLAY_MANUAL && r.overlay_on && r.setpoint == 1800);
+
+    /* Below zero, an unknown tag skipped, a malformed body refused. */
+    n = unhex("012d02ff38beef03010203", b, sizeof b);
+    CHECK(tado_report_decode(b, n, &r) && r.temperature == -200 && r.fields == TADO_TEMPERATURE);
+    n = unhex("012d0206", b, sizeof b);
+    CHECK(!tado_report_decode(b, n, &r));
 }
 
 /* --- freedo's captures ------------------------------------------------------ */
@@ -516,10 +570,13 @@ int main(int argc, char **argv)
     test_coap_encodes_options_in_order_with_extended_deltas();
     test_reasm_sensor_report();
     test_reasm_inline_udp_header();
+    test_reasm_one_fragment_holds_it_all();
     test_tado_documents();
     test_tado_block_answers();
     test_tado_resources();
+    test_tado_reports();
     run_session_tests();
+    run_hlc_tests();
     test_replays_freedos_captures();
 
     printf("%d checks, %d failures\n", checks, failures);

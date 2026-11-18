@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "bytes.h"
+
 /* Reads an extended option delta or length; false when truncated or reserved. */
 static bool extended(const uint8_t *b, size_t len, size_t *i, unsigned nib, unsigned *v)
 {
@@ -150,13 +152,7 @@ const struct coap_option *coap_find(const struct coap_msg *m, uint16_t number)
     return NULL;
 }
 
-uint32_t coap_uint(const struct coap_option *o)
-{
-    uint32_t v = 0;
-    for (size_t i = 0; i < o->len && i < 4; i++)
-        v = v << 8 | o->value[i];
-    return v;
-}
+uint32_t coap_uint(const struct coap_option *o) { return get_be(o->value, o->len); }
 
 bool coap_path(const struct coap_msg *m, char *out, size_t cap)
 {

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bytes.h"
 #include "coap.h"
 #include "lowpan.h"
 #include "tado.h"
@@ -26,22 +27,20 @@ static void say(struct session *s, const char *fmt, ...)
     s->ops.log(s->ops.ctx, line);
 }
 
-/* An EUI in wire order, as the host prints it. */
-static const char *eui_str(const uint8_t eui[8], char buf[17])
-{
-    for (int i = 0; i < 8; i++)
-        snprintf(&buf[2 * i], 3, "%02x", eui[i]);
-    return buf;
-}
-
 static const char *hex_str(const uint8_t *b, size_t n, char *buf, size_t cap)
 {
+    static const char digits[] = "0123456789abcdef";
     size_t i = 0;
-    for (; i < n && 2 * i + 2 < cap; i++)
-        snprintf(&buf[2 * i], 3, "%02x", b[i]);
+    for (; i < n && 2 * i + 2 < cap; i++) {
+        buf[2 * i] = digits[b[i] >> 4];
+        buf[2 * i + 1] = digits[b[i] & 0xf];
+    }
     buf[2 * i] = '\0';
     return buf;
 }
+
+/* An EUI in wire order, as the host prints it. */
+static const char *eui_str(const uint8_t eui[8], char buf[17]) { return hex_str(eui, 8, buf, 17); }
 
 static bool elapsed(uint32_t now, uint32_t stamp, uint32_t interval) { return now - stamp >= interval; }
 
@@ -49,7 +48,7 @@ static uint32_t rand32(struct session *s)
 {
     uint8_t b[4];
     s->ops.rng(s->ops.ctx, b, sizeof b);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+    return get32(b);
 }
 
 static int send(struct session *s, bool unicast, const uint8_t dst[8], uint8_t flags, const uint8_t *packet,
@@ -146,6 +145,13 @@ void session_id(const uint8_t device[8], uint8_t out[8]) { tado_etag(device, 8, 
 
 /* --- pairing ---------------------------------------------------------------- */
 
+static void pair_left_radio(struct session *s, uint32_t now)
+{
+    s->pair_handle = -1;
+    s->pair_deadline_set = true;
+    s->pair_deadline_ms = now + SESSION_PAIR_ANSWER_TIMEOUT_MS;
+}
+
 static void send_pair(struct session *s, uint32_t now)
 {
     uint8_t session[8], packet[SESSION_MAX_PACKET];
@@ -159,13 +165,8 @@ static void send_pair(struct session *s, uint32_t now)
     s->pair_sent_ms = now;
     char e[17];
     say(s, "d/pair to %s (attempt %d)", eui_str(s->joiner, e), s->pair_attempts);
-}
-
-static void pair_left_radio(struct session *s, uint32_t now)
-{
-    s->pair_handle = -1;
-    s->pair_deadline_set = true;
-    s->pair_deadline_ms = now + SESSION_PAIR_ANSWER_TIMEOUT_MS;
+    if (s->pair_handle < 0)
+        pair_left_radio(s, now); /* refused: no TX_DONE will come, the attempt times out instead */
 }
 
 /* A piggybacked answer (an ACK with one of our d/pair MIDs), or a separate
@@ -199,23 +200,26 @@ static void on_pair_answer(struct session *s, bool pairing_key, const struct coa
 
 /* --- Router Advertisements ----------------------------------------------- */
 
+static void ra_ended(struct session *s, uint32_t now);
+
 /* During a pair window every RA goes twice: network key with Frame Pending,
  * then the pairing key. */
 static void send_router_advert(struct session *s, uint32_t now)
 {
-    uint8_t ra[SESSION_MAX_PACKET];
+    uint8_t ra[MAC_BROADCAST_MAX_PACKET];
     size_t n = tado_router_advert(ra, sizeof ra, s->coordinator, NO_IPV4, NO_IPV4);
     schedule_next_ra(s, now);
     if (!pair_window_open(s)) {
         s->ra_handle = send(s, false, NULL, LINK_TX_TRAIN_FULL, ra, n);
-        s->ra_sent_ms = now;
         say(s, "router advertisement sent");
-        return;
+    } else {
+        send(s, false, NULL, LINK_TX_FRAME_PENDING | LINK_TX_TRAIN_FULL, ra, n);
+        s->ra_handle = send(s, false, NULL, LINK_TX_PAIRING_KEY | LINK_TX_TRAIN_FULL, ra, n);
+        say(s, "router advertisement sent (network + pairing key)");
     }
-    send(s, false, NULL, LINK_TX_FRAME_PENDING | LINK_TX_TRAIN_FULL, ra, n);
-    s->ra_handle = send(s, false, NULL, LINK_TX_PAIRING_KEY | LINK_TX_TRAIN_FULL, ra, n);
     s->ra_sent_ms = now;
-    say(s, "router advertisement sent (network + pairing key)");
+    if (s->ra_handle < 0)
+        ra_ended(s, now); /* refused: no TX_DONE will come; d/pair and the 3 s gap go on from now */
 }
 
 static void ra_ended(struct session *s, uint32_t now)
@@ -254,146 +258,165 @@ static struct session_answer *answer_find(struct session *s, const uint8_t devic
     return NULL;
 }
 
-/* Sends an answer on the device's sample and keeps it for the request's repeats. */
-static void answer(struct session *s, const uint8_t device[8], uint16_t mid, const uint8_t *packet, size_t len,
+/* The slot the next answer is built in: a free one, else the oldest. */
+static struct session_answer *answer_slot(struct session *s, uint32_t now)
+{
+    struct session_answer *oldest = &s->answers[0];
+    for (size_t i = 0; i < SESSION_MAX_ANSWERS; i++) {
+        struct session_answer *x = &s->answers[i];
+        if (!x->used)
+            return x;
+        if (now - x->at_ms > now - oldest->at_ms)
+            oldest = x;
+    }
+    return oldest;
+}
+
+/* Sends the answer built in a->packet on the device's sample and keeps it for
+ * the request's repeats. */
+static void answer(struct session *s, struct session_answer *a, const uint8_t device[8], uint16_t mid, size_t len,
                    uint32_t now)
 {
-    if (len == 0 || len > SESSION_MAX_PACKET) {
+    if (len == 0) {
+        a->used = false;
         say(s, "answer to MID %04x does not fit one frame: not sent", mid);
         return;
     }
-    struct session_answer *a = NULL, *oldest = &s->answers[0];
-    for (size_t i = 0; i < SESSION_MAX_ANSWERS && !a; i++) {
-        struct session_answer *x = &s->answers[i];
-        if (!x->used)
-            a = x;
-        else if (now - x->at_ms > now - oldest->at_ms)
-            oldest = x;
-    }
-    if (!a)
-        a = oldest;
-    *a = (struct session_answer){.used = true, .mid = mid, .at_ms = now, .sent_ms = now, .len = (uint8_t)len};
+    a->used = true;
+    a->mid = mid;
+    a->at_ms = a->sent_ms = now;
+    a->len = (uint8_t)len;
     memcpy(a->device, device, 8);
-    memcpy(a->packet, packet, len);
-    a->handle = send(s, true, device, LINK_TX_TRAIN_ANCHORED, packet, len);
+    a->handle = send(s, true, device, LINK_TX_TRAIN_ANCHORED, a->packet, len);
 }
 
-/* h/<our home>/z/<n>/<leaf>: the zone number, or -1 for any other path. */
-static int zone_path(const struct session *s, const struct coap_msg *m, const char *leaf)
-{
+/* The Uri-Path segments of a request; n is 0 for a path of more than 5. */
+struct path {
+    size_t n;
     const struct coap_option *seg[5];
-    size_t n = 0;
-    for (size_t i = 0; i < m->n_options; i++)
-        if (m->options[i].number == COAP_OPT_URI_PATH) {
-            if (n == 5)
-                return -1;
-            seg[n++] = &m->options[i];
-        }
-    if (n != 5 || seg[0]->len != 1 || seg[0]->value[0] != 'h' || seg[2]->len != 1 || seg[2]->value[0] != 'z')
-        return -1;
-    char home[11];
-    int hn = snprintf(home, sizeof home, "%lu", (unsigned long)s->home_id);
-    if ((size_t)hn != seg[1]->len || memcmp(home, seg[1]->value, (size_t)hn) != 0)
-        return -1;
-    if (seg[3]->len < 1 || seg[3]->len > 3)
-        return -1;
-    int zone = 0;
-    for (size_t i = 0; i < seg[3]->len; i++) {
-        if (seg[3]->value[i] < '0' || seg[3]->value[i] > '9')
-            return -1;
-        zone = zone * 10 + (seg[3]->value[i] - '0');
+};
+
+static struct path path_of(const struct coap_msg *m)
+{
+    struct path p = {0};
+    for (size_t i = 0; i < m->n_options; i++) {
+        if (m->options[i].number != COAP_OPT_URI_PATH)
+            continue;
+        if (p.n == 5)
+            return (struct path){0};
+        p.seg[p.n++] = &m->options[i];
     }
-    if (strlen(leaf) != seg[4]->len || memcmp(leaf, seg[4]->value, seg[4]->len) != 0)
+    return p;
+}
+
+static bool seg_is(const struct coap_option *o, const char *text)
+{
+    return o->len == strlen(text) && memcmp(o->value, text, o->len) == 0;
+}
+
+/* The decimal value of a segment of 1..10 digits, or -1. */
+static int64_t seg_number(const struct coap_option *o)
+{
+    if (o->len < 1 || o->len > 10)
         return -1;
-    return zone;
+    int64_t v = 0;
+    for (size_t i = 0; i < o->len; i++) {
+        if (o->value[i] < '0' || o->value[i] > '9')
+            return -1;
+        v = v * 10 + (o->value[i] - '0');
+    }
+    return v;
+}
+
+/* h/<our home>/z/<n>/<leaf>: the configured zone, with its leaf; NULL else. */
+static struct session_zone *zone_path(struct session *s, const struct path *p, const struct coap_option **leaf)
+{
+    if (p->n != 5 || !seg_is(p->seg[0], "h") || !seg_is(p->seg[2], "z") || seg_number(p->seg[1]) != s->home_id)
+        return NULL;
+    int64_t zone = seg_number(p->seg[3]);
+    *leaf = p->seg[4];
+    return zone >= 0 && zone <= 0xff ? zone_find(s, (unsigned)zone) : NULL;
+}
+
+static bool overlay_over(const struct session_zone *z, uint32_t now)
+{
+    return z->overlay_for_ms != 0 && elapsed(now, z->overlay_start_ms, z->overlay_for_ms);
 }
 
 /* The zone's running overlay setpoint, or -1. */
 static int32_t overlay_of(const struct session_zone *z, uint32_t now)
 {
-    if (!z->overlay || (z->overlay_ends && (int32_t)(now - z->overlay_end_ms) >= 0))
-        return -1;
-    return z->overlay_setpoint;
+    return z->overlay && !overlay_over(z, now) ? z->overlay_setpoint : -1;
 }
 
-/* The configuration (d/<serial>/config), zone document (h/<home>/z/<n>/config)
- * or zone state (h/<home>/z/<n>/s) for a device of the installation; 0 for
- * anything else. */
-static size_t document_for(struct session *s, const uint8_t device[8], const struct coap_msg *m, uint8_t *doc,
-                           size_t cap, uint32_t now)
+/* Builds in s->doc the configuration (d/<serial>/config), zone document
+ * (h/<home>/z/<n>/config) or zone state (h/<home>/z/<n>/s) for a device of the
+ * installation; returns its length, 0 for anything else. */
+static size_t document_for(struct session *s, const uint8_t device[8], const struct path *p, uint32_t now)
 {
-    size_t n_path = 0;
-    const struct coap_option *seg[3] = {0};
-    for (size_t i = 0; i < m->n_options; i++)
-        if (m->options[i].number == COAP_OPT_URI_PATH && n_path++ < 3)
-            seg[n_path - 1] = &m->options[i];
-    if (n_path == 3 && seg[0]->len == 1 && seg[0]->value[0] == 'd' && seg[2]->len == 6 &&
-        memcmp(seg[2]->value, "config", 6) == 0) {
+    if (p->n == 3 && seg_is(p->seg[0], "d") && seg_is(p->seg[2], "config")) {
         struct tado_zone_role roles[SESSION_MAX_ZONES];
         size_t n = 0;
         for (size_t i = 0; i < SESSION_MAX_ZONES; i++)
             if (s->zones[i].used && memcmp(s->zones[i].owner, device, 8) == 0)
                 roles[n++] = (struct tado_zone_role){TADO_ROLE_OWNER, s->zones[i].zone};
-        return n ? tado_device_config(doc, cap, s->home_id, roles, n) : 0;
+        return n ? tado_device_config(s->doc, sizeof s->doc, s->home_id, roles, n) : 0;
     }
-    int zone = zone_path(s, m, "config");
-    struct session_zone *z = zone >= 0 ? zone_find(s, (unsigned)zone) : NULL;
-    if (z)
-        return tado_zone_with_owner(doc, cap, z->owner);
-    zone = zone_path(s, m, "s");
-    z = zone >= 0 ? zone_find(s, (unsigned)zone) : NULL;
-    if (z)
-        return tado_zone_state(doc, cap, z->setpoint, overlay_of(z, now));
+    const struct coap_option *leaf;
+    struct session_zone *z = zone_path(s, p, &leaf);
+    if (z && seg_is(leaf, "config"))
+        return tado_zone_with_owner(s->doc, sizeof s->doc, z->owner);
+    if (z && seg_is(leaf, "s"))
+        return tado_zone_state(s->doc, sizeof s->doc, z->setpoint, overlay_of(z, now));
     return 0;
-}
-
-static bool tlvs_well_formed(const uint8_t *body, size_t len)
-{
-    size_t i = 0;
-    while (i + 3 <= len && i + 3 + body[i + 2] <= len)
-        i += 3 + body[i + 2];
-    return i == len;
 }
 
 /* PUT h/<home>/z/<n>/overlay from the zone's owner: a setpoint set on the device
  * (6240 manual, 6280 the setpoint), or 6240=0 when the device ended it. It
  * carries no end: the zone keeps it for the installation's overlay time. */
-static void on_device_overlay(struct session *s, const uint8_t device[8], const struct coap_msg *m, uint32_t now)
+static void on_device_overlay(struct session *s, const uint8_t device[8], const struct coap_msg *m,
+                              const struct path *p, uint32_t now)
 {
-    int zone = zone_path(s, m, "overlay");
-    if (zone < 0)
+    const struct coap_option *leaf;
+    struct session_zone *z = zone_path(s, p, &leaf);
+    if (p->n != 5 || !seg_is(p->seg[4], "overlay"))
         return;
     char e[17];
-    struct session_zone *z = zone_find(s, (unsigned)zone);
-    if (!z || memcmp(z->owner, device, 8) != 0) {
-        say(s, "overlay on zone %d from %s, which does not own it: ignored", zone, eui_str(device, e));
+    if (!z || !seg_is(leaf, "overlay") || memcmp(z->owner, device, 8) != 0) {
+        say(s, "overlay on %s from %s, which does not own it: ignored", z ? "its zone" : "a zone we do not serve",
+            eui_str(device, e));
         return;
     }
-    if (!tlvs_well_formed(m->payload, m->payload_len)) {
-        say(s, "overlay on zone %d: malformed TLVs", zone);
+    unsigned zone = z->zone;
+    struct tado_report r;
+    if (!tado_report_decode(m->payload, m->payload_len, &r)) {
+        say(s, "overlay on zone %u: malformed TLVs", zone);
         return;
     }
-    const uint8_t *kind, *setpoint;
-    size_t kind_len, setpoint_len;
-    bool has_kind = tado_tlv_find(m->payload, m->payload_len, 0x6240, &kind, &kind_len);
-    bool has_setpoint = tado_tlv_find(m->payload, m->payload_len, 0x6280, &setpoint, &setpoint_len);
     z->writing = false; /* the device's word is newer than ours */
-    if (has_kind && tado_tlv_uint(kind, kind_len) == 0) {
+    if ((r.fields & TADO_OVERLAY) && r.overlay == 0) {
         z->overlay = false;
-        say(s, "zone %d: the device ended its overlay", zone);
-    } else if (has_setpoint) {
-        uint32_t c = tado_tlv_uint(setpoint, setpoint_len);
+        say(s, "zone %u: the device ended its overlay", zone);
+    } else if (r.fields & TADO_OVERLAY_SETPOINT) {
+        uint32_t c = r.overlay_setpoint;
         z->overlay = true;
         z->overlay_setpoint = (uint16_t)c;
-        z->overlay_ends = s->overlay_ms != 0;
-        z->overlay_end_ms = now + s->overlay_ms;
-        if (z->overlay_ends)
-            say(s, "zone %d: %lu.%02lu C set on the device, for %lu min", zone, (unsigned long)c / 100,
-                 (unsigned long)c % 100, (unsigned long)s->overlay_ms / 60000u);
+        z->overlay_start_ms = now;
+        z->overlay_for_ms = s->overlay_ms;
+        if (z->overlay_for_ms)
+            say(s, "zone %u: %lu.%02lu C set on the device, for %lu min", zone, (unsigned long)c / 100,
+                (unsigned long)c % 100, (unsigned long)s->overlay_ms / 60000u);
         else
-            say(s, "zone %d: %lu.%02lu C set on the device, until changed", zone, (unsigned long)c / 100,
-                 (unsigned long)c % 100);
+            say(s, "zone %u: %lu.%02lu C set on the device, until changed", zone, (unsigned long)c / 100,
+                (unsigned long)c % 100);
     }
+}
+
+static void send_zone_write(struct session *s, struct session_zone *z, uint32_t now)
+{
+    z->write_attempts++;
+    z->write_sent_ms = now;
+    send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
 }
 
 /* Ends each overlay whose time is up and tells its device, which would else
@@ -402,7 +425,7 @@ static void end_overlays(struct session *s, uint32_t now)
 {
     for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
         struct session_zone *z = &s->zones[i];
-        if (!z->used || !z->overlay || !z->overlay_ends || (int32_t)(now - z->overlay_end_ms) < 0)
+        if (!z->used || !z->overlay || !overlay_over(z, now))
             continue;
         z->overlay = false;
         say(s, "zone %u: the device's overlay ran out, back to %u.%02u C", z->zone, z->setpoint / 100u,
@@ -413,9 +436,8 @@ static void end_overlays(struct session *s, uint32_t now)
         z->write_len = (uint8_t)tado_zone_state_write(z->write_packet, sizeof z->write_packet, z->zone, state, sn,
                                                       z->write_mid, s->coordinator, z->owner);
         z->writing = true;
-        z->write_attempts = 1;
-        z->write_sent_ms = now;
-        send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
+        z->write_attempts = 0;
+        send_zone_write(s, z, now);
     }
 }
 
@@ -432,9 +454,7 @@ static void repeat_zone_writes(struct session *s, uint32_t now)
             z->writing = false;
             continue;
         }
-        z->write_attempts++;
-        z->write_sent_ms = now;
-        send(s, true, z->owner, LINK_TX_TRAIN_ANCHORED, z->write_packet, z->write_len);
+        send_zone_write(s, z, now);
     }
 }
 
@@ -445,11 +465,11 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
     const uint8_t *src = ev->rx.src;
     char e[17], path[64], hex[96];
     struct coap_msg m;
+    struct session_answer *a;
     if (!coap_decode(d->payload, d->payload_len, &m)) {
         say(s, "bad CoAP from %s", eui_str(src, e));
         return;
     }
-    uint8_t out[SESSION_MAX_PACKET];
     bool from_joiner = s->has_joiner && memcmp(s->joiner, src, 8) == 0;
     if (from_joiner && s->pair == SESSION_PAIR_PAIRING && is_pair_answer(s, &m)) {
         if (m.type == COAP_ACK && m.code == 0) {
@@ -461,6 +481,7 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
         }
         if (m.type == COAP_CON) {
             /* Answer under the key it came in, so the ACK reaches it either way. */
+            uint8_t out[SESSION_MAX_PACKET];
             size_t n = tado_empty_ack(out, sizeof out, &m, d, s->coordinator, src);
             send(s, true, src, LINK_TX_TRAIN_FULL | (ev->rx.pairing_key ? LINK_TX_PAIRING_KEY : 0), out, n);
         }
@@ -496,33 +517,37 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
              eui_str(src, e));
         return;
     }
-    uint8_t doc[512];
-    size_t doc_len = m.code == COAP_GET ? document_for(s, src, &m, doc, sizeof doc, now) : 0;
+    struct path p = path_of(&m);
+    size_t doc_len = m.code == COAP_GET ? document_for(s, src, &p, now) : 0;
     size_t n;
     if (doc_len > 0) {
         const struct coap_option *b = coap_find(&m, COAP_OPT_BLOCK2);
         say(s, "GET %s from %s, block %s", path, eui_str(src, e), b ? hex_str(b->value, b->len, hex, sizeof hex) : "-");
-        n = tado_block_answer(out, sizeof out, &m, doc, doc_len, d, s->coordinator, src);
+        a = answer_slot(s, now);
+        n = tado_block_answer(a->packet, sizeof a->packet, &m, s->doc, doc_len, d, s->coordinator, src);
     } else if (coap_path_is(&m, "auth/token") || coap_path_is(&m, "auth/key")) {
         say(s, "%s from %s, answering with a session", path, eui_str(src, e));
         uint8_t id[8];
         session_id(src, id);
-        n = tado_auth_token_answer(out, sizeof out, &m, id, sizeof id, d, s->coordinator, src);
+        a = answer_slot(s, now);
+        n = tado_auth_token_answer(a->packet, sizeof a->packet, &m, id, sizeof id, d, s->coordinator, src);
     } else if (coap_path_is(&m, "time")) {
         say(s, "time from %s", eui_str(src, e));
-        n = tado_time_answer(out, sizeof out, &m, s->ops.unix_time(s->ops.ctx), d, s->coordinator, src);
+        a = answer_slot(s, now);
+        n = tado_time_answer(a->packet, sizeof a->packet, &m, s->ops.unix_time(s->ops.ctx), d, s->coordinator, src);
     } else if (m.code == COAP_PUT || m.code == COAP_POST) {
         /* Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries. */
         say(s, "%u.%02u %s from %s, answering 2.04: %s", m.code >> 5, m.code & 0x1f, path, eui_str(src, e),
-             hex_str(m.payload, m.payload_len, hex, sizeof hex));
+            hex_str(m.payload, m.payload_len, hex, sizeof hex));
         if (m.code == COAP_PUT)
-            on_device_overlay(s, src, &m, now);
-        n = tado_changed_answer(out, sizeof out, &m, d, s->coordinator, src);
+            on_device_overlay(s, src, &m, &p, now);
+        a = answer_slot(s, now);
+        n = tado_changed_answer(a->packet, sizeof a->packet, &m, d, s->coordinator, src);
     } else {
         say(s, "CoAP %u.%02u %s from %s (not handled yet)", m.code >> 5, m.code & 0x1f, path, eui_str(src, e));
         return;
     }
-    answer(s, src, m.mid, out, n, now);
+    answer(s, a, src, m.mid, n, now);
 }
 
 /* --- events ----------------------------------------------------------------- */

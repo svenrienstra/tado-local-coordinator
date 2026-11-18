@@ -19,13 +19,14 @@ bool reasm_is_fragment(const uint8_t *p, size_t len)
 
 static bool unit_held(const struct reasm_slot *s, size_t u) { return s->have[u / 8] >> (u % 8) & 1; }
 
-/* Whether the units [from, to) of later[] are all held, or none. */
+/* Whether the units [from, to) of later[] are all held (1, also for none at
+ * all), none of them (0), or some (-1). */
 static int units_held(const struct reasm_slot *s, size_t from, size_t to)
 {
     size_t n = 0;
     for (size_t u = from; u < to; u++)
         n += unit_held(s, u);
-    return n == 0 ? 0 : n == to - from ? 1 : -1;
+    return n == to - from ? 1 : n == 0 ? 0 : -1;
 }
 
 static bool add_first(struct reasm_slot *s, const uint8_t *body, size_t len)
@@ -38,7 +39,9 @@ static bool add_first(struct reasm_slot *s, const uint8_t *body, size_t len)
     if (!lowpan_parse(body, len, s->src, NULL, &head))
         return false;
     size_t covers = IPV6_HEADER + (head.next_header == LOWPAN_NH_UDP ? UDP_HEADER : 0) + head.payload_len;
-    if (covers > s->size || covers % 8 != 0)
+    /* Later fragments start on 8-byte units, so a FRAG1 that leaves some to
+     * them ends on one; a FRAG1 may also hold the whole datagram. */
+    if (covers > s->size || (covers % 8 != 0 && covers != s->size))
         return false;
     /* No later piece may start inside what frag1 stands for. */
     if (units_held(s, 0, covers / 8) != 0)
@@ -67,7 +70,7 @@ static bool add_later(struct reasm_slot *s, size_t offset, const uint8_t *data, 
 
 static bool complete(const struct reasm_slot *s)
 {
-    return s->frag1_covers != 0 && units_held(s, s->frag1_covers / 8, (s->size + 7u) / 8) == 1;
+    return s->frag1_covers != 0 && units_held(s, (s->frag1_covers + 7u) / 8, (s->size + 7u) / 8) == 1;
 }
 
 enum reasm_result reasm_add(struct reasm *r, const uint8_t src[8], const uint8_t *p, size_t len,

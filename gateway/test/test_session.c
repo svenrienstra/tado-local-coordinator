@@ -21,9 +21,15 @@ static uint32_t now;      /* ms */
 static uint64_t rng_state;
 static bool verbose;
 
+static int refuse_next; /* how many of the next frames the CC1312 refuses */
+
 static int stub_tx(void *ctx, const struct link_tx *tx)
 {
     (void)ctx;
+    if (refuse_next > 0) {
+        refuse_next--;
+        return -1;
+    }
     if (n_sent == sizeof sent / sizeof sent[0])
         return -1;
     struct sent *s = &sent[n_sent++];
@@ -68,6 +74,7 @@ static void fresh(struct session *s, bool pair_window)
     n_sent = 0;
     now = 0;
     rng_state = 1;
+    refuse_next = 0;
     session_init(s, coordinator(), V("in.network_key")->data, &OPS, now);
     if (pair_window)
         session_open_pair_window(s);
@@ -297,6 +304,37 @@ static void lost_tx_done_events_do_not_stall_the_join(void)
     now += SESSION_PAIR_ANSWER_TIMEOUT_MS;
     session_tick(&s, now);
     CHECK(n_sent == 4); /* d/pair is retried */
+}
+
+/* The CC1312 refusing d/pair (its queue full) must not leave the window stuck:
+ * the attempt times out like a lost answer, and the next one goes. */
+static void a_refused_d_pair_is_tried_again(void)
+{
+    static struct session s;
+    fresh(&s, true);
+    beacon_answered(&s);
+    router_solicitation(&s);
+    refuse_next = 1;
+    tx_done(&s, 2, LINK_SENT); /* the RA ended: d/pair, refused */
+    CHECK(n_sent == 2 && session_pair_state(&s) == SESSION_PAIR_PAIRING);
+    now += SESSION_PAIR_ANSWER_TIMEOUT_MS;
+    session_tick(&s, now);
+    CHECK(n_sent == 3 && path_of(2, "d/pair"));
+}
+
+/* A refused Router Advertisement is as good as sent: d/pair still follows,
+ * and the next solicitation within 3 s gets none. */
+static void a_refused_advertisement_still_leads_to_d_pair(void)
+{
+    static struct session s;
+    fresh(&s, true);
+    beacon_answered(&s);
+    refuse_next = 2; /* both copies of the pair-window RA */
+    router_solicitation(&s);
+    CHECK(n_sent == 1 && path_of(0, "d/pair"));
+    now += 1000;
+    router_solicitation(&s);
+    CHECK(n_sent == 1);
 }
 
 static void an_empty_ack_then_a_separate_204_joins(void)
@@ -685,6 +723,23 @@ static void an_overlay_time_of_zero_keeps_the_devices_setpoint_until_changed(voi
     CHECK_BYTES(st.payload, st.payload_len, want, wn);
 }
 
+/* An overlay time of 2^31 ms or more (25 days) is a time like any other. */
+static void a_thirty_day_overlay_lasts_thirty_days(void)
+{
+    static struct session s;
+    serving_zone11(&s, 30u * 86400000u);
+    struct coap_msg m = overlay_put(0x0341, "h/4242/z/11/overlay", OVERLAY_21C, sizeof OVERLAY_21C);
+    from_joiner(&s, false, &m);
+    for (int day = 0; day < 29; day++) {
+        now += 86400000u;
+        session_tick(&s, now);
+    }
+    CHECK(unicasts() == 1); /* still running: no write */
+    now += 86400000u;
+    session_tick(&s, now);
+    CHECK(unicasts() == 2 && path_of((size_t)unicast(1), "z/s"));
+}
+
 void run_session_tests(void)
 {
     verbose = getenv("VERBOSE") != NULL;
@@ -693,6 +748,8 @@ void run_session_tests(void)
     retries_d_pair_with_a_new_mid_and_gives_up_after_the_last_attempt();
     a_late_204_to_an_earlier_attempt_still_counts_as_joined();
     lost_tx_done_events_do_not_stall_the_join();
+    a_refused_d_pair_is_tried_again();
+    a_refused_advertisement_still_leads_to_d_pair();
     an_empty_ack_then_a_separate_204_joins();
     a_joiner_learned_within_the_advertisement_gap_still_gets_d_pair();
     an_answer_under_the_pairing_key_means_the_valve_did_not_adopt_our_key();
@@ -709,4 +766,5 @@ void run_session_tests(void)
     repeats_an_unacknowledged_zone_write_under_its_mid_then_gives_up();
     an_overlay_the_device_ends_or_that_is_not_its_zone_leaves_nothing_to_write();
     an_overlay_time_of_zero_keeps_the_devices_setpoint_until_changed();
+    a_thirty_day_overlay_lasts_thirty_days();
 }

@@ -3,11 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bytes.h"
+
 #define CONTENT_FORMAT_OCTETS 42
 #define PAIR_KEY_TAG          0x12 /* plaintext network key (0x07 is cloud-KEK wrapped) */
 #define SESSION_LIFETIME_MIN  1440
 #define PROTOBUF_FIXED32_F1   0x0d
-#define COAP_MAX_MESSAGE      256
 
 /* A bounded writer: once something does not fit, the result is 0. */
 struct out {
@@ -126,29 +127,36 @@ size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t over
     return done(&o);
 }
 
-bool tado_tlv_find(const uint8_t *body, size_t len, uint16_t tag, const uint8_t **value, size_t *value_len)
+bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r)
 {
-    bool found = false;
-    for (size_t i = 0; i + 3 <= len;) {
+    memset(r, 0, sizeof *r);
+    size_t i = 0;
+    while (i + 3 <= len) {
+        unsigned tag = (unsigned)(body[i] << 8 | body[i + 1]);
         size_t n = body[i + 2];
         if (i + 3 + n > len)
             return false;
-        if ((body[i] << 8 | body[i + 1]) == tag) {
-            *value = &body[i + 3];
-            *value_len = n;
-            found = true;
-        }
+        const uint8_t *v = &body[i + 3];
+        uint32_t u = get_be(v, n);
         i += 3 + n;
+        if (n == 0 || n > 2)
+            continue; /* every known tag is 1 or 2 bytes */
+        switch (tag) {
+        case 0x012d: r->temperature = (int16_t)u; r->fields |= TADO_TEMPERATURE; break;
+        case 0x012e: r->temperature_raw = (int16_t)u; r->fields |= TADO_TEMPERATURE_RAW; break;
+        case 0x4060: r->zone_temperature = (int16_t)u; r->fields |= TADO_ZONE_TEMPERATURE; break;
+        case 0x0135: r->humidity = (uint16_t)u; r->fields |= TADO_HUMIDITY; break;
+        case 0x0162: r->battery_mv = (uint16_t)u; r->fields |= TADO_BATTERY; break;
+        case 0x0136: r->light = (uint8_t)u; r->fields |= TADO_LIGHT; break;
+        case 0x40a0: r->demand = (uint8_t)u; r->fields |= TADO_DEMAND; break;
+        case 0x6200: r->setpoint = (uint16_t)u; r->fields |= TADO_SETPOINT; break;
+        case 0x6240: r->overlay = (uint8_t)u; r->fields |= TADO_OVERLAY; break;
+        case 0x6260: r->overlay_on = u != 0; r->fields |= TADO_OVERLAY_ON; break;
+        case 0x6280: r->overlay_setpoint = (uint16_t)u; r->fields |= TADO_OVERLAY_SETPOINT; break;
+        default: break;
+        }
     }
-    return found;
-}
-
-uint32_t tado_tlv_uint(const uint8_t *value, size_t len)
-{
-    uint32_t v = 0;
-    for (size_t i = 0; i < len && i < 4; i++)
-        v = v << 8 | value[i];
-    return v;
+    return i == len;
 }
 
 void tado_etag(const uint8_t *doc, size_t len, uint8_t out[TADO_ETAG_LEN])
@@ -183,12 +191,15 @@ static size_t block_value(uint32_t num, bool more, unsigned szx, uint8_t b[3])
     return 3;
 }
 
-/* Encodes m as a UDP datagram from the coordinator to the device. */
+/* Encodes m as a UDP datagram from the coordinator to the device: the CoAP
+ * message goes straight where the datagram carries it, behind its headers. */
 static size_t datagram(uint8_t *out, size_t cap, const struct coap_msg *m, uint16_t src_port, uint16_t dst_port,
                        const uint8_t coordinator[8], const uint8_t device[8])
 {
-    uint8_t coap[COAP_MAX_MESSAGE];
-    size_t n = coap_encode(m, coap, sizeof coap);
+    if (cap <= LOWPAN_UDP_HEADER)
+        return 0;
+    uint8_t *coap = &out[LOWPAN_UDP_HEADER];
+    size_t n = coap_encode(m, coap, cap - LOWPAN_UDP_HEADER);
     return n ? lowpan_udp(out, cap, coordinator, device, src_port, dst_port, coap, n) : 0;
 }
 
@@ -269,8 +280,8 @@ size_t tado_auth_token_answer(uint8_t *out, size_t cap, const struct coap_msg *r
 size_t tado_time_answer(uint8_t *out, size_t cap, const struct coap_msg *request, uint32_t unix_seconds,
                         const struct lowpan_datagram *from, const uint8_t coordinator[8], const uint8_t device[8])
 {
-    uint8_t body[5] = {PROTOBUF_FIXED32_F1, (uint8_t)unix_seconds, (uint8_t)(unix_seconds >> 8),
-                       (uint8_t)(unix_seconds >> 16), (uint8_t)(unix_seconds >> 24)};
+    uint8_t body[5] = {PROTOBUF_FIXED32_F1};
+    put32(&body[1], unix_seconds);
     return answer(out, cap, request, COAP_CODE(2, 5), body, sizeof body, from, coordinator, device);
 }
 
@@ -278,8 +289,14 @@ size_t tado_router_advert(uint8_t *out, size_t cap, const uint8_t coordinator[8]
                           const uint8_t dns_v4[4])
 {
     /* Hop limit 64, O flag, lifetime 1800 s; SLLAO, MTU 1500, and option 25
-     * with the IPv4 netmask, gateway and DNS as IPv4-mapped addresses. */
-    uint8_t m[80] = {134, 0, 0, 0, 64, 0x40, 0x07, 0x08};
+     * with the IPv4 netmask, gateway and DNS as IPv4-mapped addresses. Built
+     * where the datagram carries it, behind its 4 header bytes. */
+    if (cap < 4 + 80)
+        return 0;
+    uint8_t *m = &out[4];
+    static const uint8_t head[8] = {134, 0, 0, 0, 64, 0x40, 0x07, 0x08};
+    memset(m, 0, 80);
+    memcpy(m, head, sizeof head);
     size_t n = 16;
     m[n++] = 1;
     m[n++] = 2;

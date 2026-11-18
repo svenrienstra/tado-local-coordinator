@@ -4,8 +4,10 @@
 BUILD   := build
 FW      := ../firmware/src
 # Shared with the CC1312 firmware, not copied (PLAN.md 4.2).
-SHARED  := $(FW)/crc.c $(FW)/ccm.c $(FW)/mac.c
-CORE    := core/coap.c core/lowpan.c core/reasm.c core/tado.c core/session.c
+SHARED  := $(FW)/crc.c $(FW)/ccm.c $(FW)/mac.c $(FW)/hlframe.c
+# The CC1312's coordinator and host link, the peer in the host-link tests.
+PEER    := $(FW)/coordinator.c $(FW)/hostlink.c
+CORE    := core/coap.c core/lowpan.c core/reasm.c core/tado.c core/session.c core/hlc.c
 FREEDO  := ../reference/freedo/tado/testdata
 
 HOST_CC     ?= cc
@@ -17,9 +19,10 @@ HOST_CFLAGS := -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -O1 -g -fsanitiz
 test: $(BUILD)/test
 	$(BUILD)/test ../golden $(FREEDO)
 
-$(BUILD)/test: $(CORE) $(SHARED) test/test_main.c test/test_session.c test/harness.h ../firmware/test/aes_soft.c $(wildcard core/*.h) $(wildcard $(FW)/*.h)
+$(BUILD)/test: $(CORE) $(SHARED) $(PEER) test/test_main.c test/test_session.c test/test_hlc.c test/harness.h ../firmware/test/aes_soft.c $(wildcard core/*.h) $(wildcard $(FW)/*.h)
 	@mkdir -p $(BUILD)
-	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(CORE) $(SHARED) test/test_main.c test/test_session.c ../firmware/test/aes_soft.c
+	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(CORE) $(SHARED) $(PEER) test/test_main.c test/test_session.c test/test_hlc.c \
+		../firmware/test/aes_soft.c
 
 clean:
 	rm -rf $(BUILD)

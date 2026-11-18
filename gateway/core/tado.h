@@ -50,12 +50,35 @@ size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t over
 /* coap://[fe80:0:0:0:..]/z/ for the device; false when it does not fit cap. */
 bool tado_zone_uri(char *out, size_t cap, const uint8_t device[8]);
 
-/* The last TLV with that tag in body; false when absent or the body is
- * malformed. */
-bool tado_tlv_find(const uint8_t *body, size_t len, uint16_t tag, const uint8_t **value, size_t *value_len);
+/* What a device reports: d/<serial>/sen, z/p, h/<home>/z/<n>/act, the z/s
+ * echo and h/<home>/z/<n>/overlay. Names as freedo's tag table (tado/tlv.go). */
+enum tado_report_field {
+    TADO_TEMPERATURE = 1u << 0,      /* 012d, calibrated, centi-C */
+    TADO_TEMPERATURE_RAW = 1u << 1,  /* 012e, the sensor's own, centi-C */
+    TADO_ZONE_TEMPERATURE = 1u << 2, /* 4060, the zone's measured temperature, centi-C */
+    TADO_HUMIDITY = 1u << 3,         /* 0135, 0.1 % */
+    TADO_BATTERY = 1u << 4,          /* 0162, mV */
+    TADO_LIGHT = 1u << 5,            /* 0136, ambient light % */
+    TADO_DEMAND = 1u << 6,           /* 40a0, heating demand % */
+    TADO_SETPOINT = 1u << 7,         /* 6200, the zone's own (scheduled) setpoint, centi-C */
+    TADO_OVERLAY = 1u << 8,          /* 6240: 0 none, 1 until auto change, 2 manual, 3 timer */
+    TADO_OVERLAY_ON = 1u << 9,       /* 6260 */
+    TADO_OVERLAY_SETPOINT = 1u << 10, /* 6280, centi-C */
+};
 
-/* A TLV value as an unsigned big-endian integer. */
-uint32_t tado_tlv_uint(const uint8_t *value, size_t len);
+struct tado_report {
+    uint32_t fields; /* enum tado_report_field bits present */
+    int16_t temperature, temperature_raw, zone_temperature;
+    uint16_t humidity, battery_mv;
+    uint8_t light, demand;
+    uint16_t setpoint, overlay_setpoint;
+    uint8_t overlay;
+    bool overlay_on;
+};
+
+/* Decodes the known tags of a report body; others are skipped. False for a
+ * malformed body. */
+bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r);
 
 /* The document's ETag: FNV-1a 64, big-endian. The device only compares it. */
 void tado_etag(const uint8_t *doc, size_t len, uint8_t out[TADO_ETAG_LEN]);

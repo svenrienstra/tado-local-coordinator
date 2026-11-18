@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "link.h"
+#include "mac.h"
 #include "reasm.h"
 
 /* The coordinator logic of the gateway, ported from the Java host's
@@ -45,7 +46,8 @@
 
 #define SESSION_MAX_ZONES   8
 #define SESSION_MAX_ANSWERS 16
-#define SESSION_MAX_PACKET  128 /* a unicast frame carries at most 97 bytes of packet */
+#define SESSION_MAX_PACKET  MAC_UNICAST_MAX_PACKET /* what one unicast frame carries */
+#define SESSION_MAX_DOCUMENT 256 /* the zone document, the largest, is about 230 bytes */
 
 enum session_pair_state {
     SESSION_PAIR_IDLE,        /* no pair window */
@@ -57,8 +59,13 @@ enum session_pair_state {
 
 struct session_ops {
     void *ctx;
-    /* Queues a frame; returns its handle (0-255), or a negative value when the
-     * CC1312 refused it. */
+    /* Queues a frame and returns the CC1312's handle for it (0-255), or a
+     * negative value when it was refused. It must not return before the
+     * CC1312 answered: over the UART that means sending the TX through hlc,
+     * feeding received bytes until its reply, and queueing the events that
+     * come meanwhile for after the call; an HL_BUSY answer (queue full) is
+     * retried there, every 100 ms for up to 8 s. The session calls it twice in
+     * a row for a pair-window Router Advertisement. */
     int (*tx)(void *ctx, const struct link_tx *tx);
     /* A progress line, without a newline. */
     void (*log)(void *ctx, const char *line);
@@ -85,9 +92,9 @@ struct session_zone {
     uint16_t setpoint;              /* centi-degrees C */
     /* A setpoint set on the owner, which the zone follows until it ends. */
     bool overlay;
-    bool overlay_ends;              /* false: until changed */
     uint16_t overlay_setpoint;
-    uint32_t overlay_end_ms;
+    /* Compared as elapsed time: any length < 2^32 ms; 0 lasts until changed. */
+    uint32_t overlay_start_ms, overlay_for_ms;
     /* The write that ends an overlay, until the device ACKs it. */
     bool writing;
     uint16_t write_mid;
@@ -107,6 +114,7 @@ struct session {
     uint32_t overlay_ms;            /* 0: an overlay lasts until changed */
     struct session_zone zones[SESSION_MAX_ZONES];
     struct session_answer answers[SESSION_MAX_ANSWERS];
+    uint8_t doc[SESSION_MAX_DOCUMENT]; /* the document a GET is answered from */
     uint16_t next_mid;
 
     int ra_handle;                  /* the last RA copy in flight, or -1 */

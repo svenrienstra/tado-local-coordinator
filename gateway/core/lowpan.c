@@ -88,7 +88,7 @@ size_t lowpan_icmpv6_to_link_multicast(uint8_t *out, size_t cap, const uint8_t s
 {
     if (4 + len > cap || len < 4)
         return 0;
-    memmove(&out[4], msg, len);
+    memmove(&out[4], msg, len); /* msg may already be there */
     uint8_t *m = &out[4];
     m[2] = m[3] = 0;
     uint8_t s[16], d[16];

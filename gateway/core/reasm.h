@@ -29,7 +29,7 @@ struct reasm_slot {
     uint8_t frag1_len;
     uint16_t frag1_covers;          /* uncompressed bytes frag1 stands for; 0 until it came */
     uint8_t later[REASM_MAX_SIZE];  /* FRAGN payload at its uncompressed offset */
-    uint8_t have[REASM_MAX_SIZE / 8]; /* 1 per 8-byte unit of later[] held */
+    uint8_t have[REASM_MAX_SIZE / 64]; /* a bit per 8-byte unit of later[] held */
 };
 
 struct reasm {
