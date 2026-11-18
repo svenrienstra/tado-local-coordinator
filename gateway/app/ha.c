@@ -117,6 +117,13 @@ uint32_t ha_zone_entities(const struct tado_report *z)
 
 /* Degrees C with at most two decimals ("21", "21.5", "21.25") in centi-C;
  * -1 for anything else. */
+bool ha_setpoint_topic(const char *topic, unsigned *zone)
+{
+    int end = 0;
+    return sscanf(topic, "tado/zone/%3u/setpoint/set%n", zone, &end) == 1 && end > 0 && topic[end] == '\0' &&
+           *zone >= 1 && *zone <= 255;
+}
+
 int32_t ha_parse_centi(const char *s, size_t len)
 {
     while (len && (*s == ' ' || *s == '\n' || *s == '\r'))
@@ -125,14 +132,19 @@ int32_t ha_parse_centi(const char *s, size_t len)
         len--;
     int32_t whole = 0, frac = 0;
     size_t i = 0, digits = 0, decimals = 0;
+    bool round_up = false;
     for (; i < len && s[i] >= '0' && s[i] <= '9' && digits < 3; i++, digits++)
         whole = whole * 10 + (s[i] - '0');
     if (i < len && s[i] == '.')
-        for (i++; i < len && s[i] >= '0' && s[i] <= '9' && decimals < 2; i++, decimals++)
-            frac = frac * 10 + (s[i] - '0');
+        for (i++; i < len && s[i] >= '0' && s[i] <= '9'; i++, decimals++) {
+            if (decimals < 2)
+                frac = frac * 10 + (s[i] - '0');
+            else if (decimals == 2)
+                round_up = s[i] >= '5'; /* a float as Home Assistant prints it: 20.200000000000003 */
+        }
     if (digits == 0 || i != len)
         return -1;
-    return whole * 100 + (decimals == 1 ? frac * 10 : frac);
+    return whole * 100 + (decimals == 1 ? frac * 10 : frac) + round_up;
 }
 
 size_t ha_device_state_topic(char *out, size_t cap, const char *serial)
@@ -224,6 +236,8 @@ static void put_climate(struct out *o, unsigned zone, const char *uid, const cha
     char set[40];
     snprintf(set, sizeof set, HA_SETPOINT_TOPIC_FMT, zone);
     put(o, "{\"name\":null,\"unique_id\":\"%s_climate\",\"modes\":[\"heat\"],", uid);
+    /* Its only mode, or Home Assistant shows it as off. */
+    put(o, "\"mode_state_topic\":\"%s\",\"mode_state_template\":\"heat\",", state_topic);
     put(o, "\"temperature_command_topic\":\"%s\",", set);
     put(o, "\"temperature_state_topic\":\"%s\",\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\",",
         state_topic);

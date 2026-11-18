@@ -546,6 +546,7 @@ uint8_t gateway_add_room(struct gateway *g, const char *name)
     slot->used = true;
     slot->zone = (uint8_t)zone;
     slot->setpoint = SESSION_DEFAULT_SETPOINT;
+    slot->dirty = true; /* its climate entity, for a setpoint before it has a device */
     strcpy(slot->name, name);
     save_install(g);
     notice(g, "room %s added as zone %u", name, zone);
@@ -585,9 +586,12 @@ bool gateway_set_setpoint(struct gateway *g, uint8_t zone, uint16_t centi)
     struct gateway_room *r = gateway_room(g, zone);
     if (!r || centi < HA_SETPOINT_MIN || centi > HA_SETPOINT_MAX)
         return false;
-    r->setpoint = centi;
-    save_install(g);
-    /* The device confirms it: its next report echoes the zone state. */
+    if (r->setpoint != centi) {
+        r->setpoint = centi;
+        save_install(g);
+    }
+    /* Written even when unchanged: that ends an overlay set on the device.
+     * The device confirms it: its next report echoes the zone state. */
     bool written = session_write_zone(&g->session, zone, now(g));
     notice(g, "room %s: setpoint %u.%02u C%s", r->name, centi / 100u, centi % 100u,
            written ? "" : " (no device yet: it gets it when it joins the room)");
@@ -725,9 +729,7 @@ void gateway_command(struct gateway *g, const char *topic, const char *payload, 
         return;
     }
     unsigned zone;
-    int end = 0;
-    if (sscanf(topic, "tado/zone/%3u/setpoint/set%n", &zone, &end) == 1 && end > 0 && topic[end] == '\0' &&
-        zone <= 255) {
+    if (ha_setpoint_topic(topic, &zone)) {
         int32_t c = ha_parse_centi(payload, len);
         if (c < 0 || !gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c))
             notice(g, "setpoint for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);

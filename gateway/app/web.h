@@ -27,9 +27,9 @@
 int web_handle(struct gateway *g, const char *method, const char *path, const char *body, size_t body_len,
                char *out, size_t cap);
 
-/* The value of key in a form-encoded body, decoded; false when it is
- * missing, malformed or does not fit cap. */
-bool web_form(const char *body, size_t len, const char *key, char *out, size_t cap);
+/* The value of key in a form-encoded body, decoded into out. */
+enum web_field { WEB_FIELD_MISSING, WEB_FIELD_OK, WEB_FIELD_BAD /* malformed, or longer than cap */ };
+enum web_field web_form(const char *body, size_t len, const char *key, char *out, size_t cap);
 
 /* Whether an Authorization header is HTTP Basic for user and password. */
 bool web_auth_ok(const char *header, const char *user, const char *password);

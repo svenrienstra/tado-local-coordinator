@@ -143,6 +143,8 @@
 const $ = (id) => document.getElementById(id);
 const PAIR_WINDOW = 120;
 let state = null;
+const pending = {}, timers = {}; /* setpoints clicked but not sent yet, by zone */
+const setpoint = (r) => pending[r.zone] ?? r.setpoint;
 
 function el(tag, props, ...children) {
   const e = document.createElement(tag);
@@ -177,7 +179,7 @@ function ago(iso) {
   return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
 }
 
-function deg(c) { return `${c.toFixed(1).replace(/\.0$/, "")}°`; }
+function deg(c) { return `${(Math.round(c * 100) / 100).toString()}°`; }
 
 function bigTemp(c) {
   if (c == null) return el("div", { className: "temp none", textContent: "–" });
@@ -236,16 +238,27 @@ function roomTile(r) {
   tile.append(el("div", { className: "state" }, ...line));
 
   /* The room's own setpoint, as the gateway keeps it; the device confirms it
-   * in its next report (the status line). */
-  const step = (delta) => {
-    const c = Math.min(25, Math.max(5, r.setpoint / 100 + delta));
-    act(`/api/rooms/${r.zone}`, { setpoint: c.toFixed(1) });
+   * in its next report (the status line). Clicks add up on the page and go
+   * out once they stop, on the 0.5 grid. */
+  const shown = el("span");
+  const show = () => { shown.textContent = `Set ${deg(setpoint(r) / 100)}`; };
+  const step = (dir) => {
+    const half = setpoint(r) / 50;
+    const next = (dir > 0 ? Math.floor(half + 1e-6) + 1 : Math.ceil(half - 1e-6) - 1) * 50;
+    pending[r.zone] = Math.min(state.setpoint_max, Math.max(state.setpoint_min, next));
+    show();
+    clearTimeout(timers[r.zone]);
+    timers[r.zone] = setTimeout(() => {
+      const c = pending[r.zone];
+      act(`/api/rooms/${r.zone}`, { setpoint: (c / 100).toFixed(2) }).then(() => { delete pending[r.zone]; render(); });
+    }, 600);
   };
   const down = el("button", { title: "Lower", textContent: "−" });
   const up = el("button", { title: "Raise", textContent: "+" });
-  down.onclick = () => step(-0.5);
-  up.onclick = () => step(0.5);
-  tile.append(el("div", { className: "setpoint" }, down, el("span", { textContent: `Set ${deg(r.setpoint / 100)}` }), up));
+  down.onclick = () => step(-1);
+  up.onclick = () => step(1);
+  show();
+  tile.append(el("div", { className: "setpoint" }, down, shown, up));
 
   if (d) {
     tile.append(el("div", { className: "dev" },

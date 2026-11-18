@@ -33,8 +33,12 @@ enum ha_entity {
     HA_ZONE_CLIMATE, /* the room's thermostat: set its setpoint from Home Assistant */
 };
 
-/* Where Home Assistant sends a room's setpoint (degrees C, e.g. "21.5"). */
+/* Where Home Assistant sends a room's setpoint (degrees C, e.g. "21.5"):
+ * the topic for a zone, the subscription for all, and the zone of a topic
+ * (false for another topic). */
 #define HA_SETPOINT_TOPIC_FMT "tado/zone/%u/setpoint/set"
+#define HA_SETPOINT_TOPICS    "tado/zone/+/setpoint/set"
+bool ha_setpoint_topic(const char *topic, unsigned *zone);
 /* What tado's own app offers. */
 #define HA_SETPOINT_MIN 500  /* centi-degrees C */
 #define HA_SETPOINT_MAX 2500
@@ -48,8 +52,8 @@ struct ha_device {
     uint32_t last_seen;      /* Unix seconds, 0 when the clock was not set */
 };
 
-/* A setpoint as Home Assistant and the page send it: degrees C with at most
- * two decimals ("21", "21.5", "21.25"), spaces around allowed; centi-C, or
+/* A setpoint as Home Assistant and the page send it: degrees C ("21",
+ * "21.5", "20.200000000000003"), spaces around allowed; centi-C, rounded, or
  * -1 for anything else. */
 int32_t ha_parse_centi(const char *s, size_t len);
 

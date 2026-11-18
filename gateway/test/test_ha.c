@@ -1,5 +1,6 @@
 /* Home Assistant topics and payloads: state JSON as reported, discovery
  * configs, and what may not go into a topic. */
+#include "gateway.h"
 #include "ha.h"
 #include "harness.h"
 
@@ -94,6 +95,7 @@ static void a_room_is_a_climate_entity(void)
     CHECK(strcmp(topic, "homeassistant/climate/tado_zone_11/config") == 0);
     CHECK(strcmp(payload,
                  "{\"name\":null,\"unique_id\":\"tado_zone_11_climate\",\"modes\":[\"heat\"],"
+                 "\"mode_state_topic\":\"tado/zone/11/state\",\"mode_state_template\":\"heat\","
                  "\"temperature_command_topic\":\"tado/zone/11/setpoint/set\","
                  "\"temperature_state_topic\":\"tado/zone/11/state\","
                  "\"temperature_state_template\":\"{{ value_json.setpoint | default('None') }}\","
@@ -106,6 +108,11 @@ static void a_room_is_a_climate_entity(void)
                  "\"device\":{\"identifiers\":[\"tado_zone_11\"],\"name\":\"Living\",\"manufacturer\":\"tado\"}}") == 0);
     struct tado_report none = {0};
     CHECK(ha_zone_entities(&none) == 1u << HA_ZONE_CLIMATE); /* from the start */
+
+    /* The largest one fits the gateway's publishing buffer. */
+    static struct gateway g;
+    CHECK(ha_zone_discovery(g.topic, sizeof g.topic, g.payload, sizeof g.payload, 255, "12345678901234567890123",
+                            HA_ZONE_CLIMATE));
 }
 
 /* What Home Assistant sends (temp_step 0.1) and people type on the page. */
@@ -115,7 +122,9 @@ static void reads_a_setpoint(void)
     CHECK(ha_parse_centi("21.5", 4) == 2150);
     CHECK(ha_parse_centi("21.25", 5) == 2125);
     CHECK(ha_parse_centi(" 7.0\n", 5) == 700);
-    CHECK(ha_parse_centi("21.255", 6) == -1);
+    CHECK(ha_parse_centi("21.255", 6) == 2126);
+    CHECK(ha_parse_centi("20.200000000000003", 18) == 2020);
+    CHECK(ha_parse_centi("20.29999", 8) == 2030);
     CHECK(ha_parse_centi("-5", 2) == -1);
     CHECK(ha_parse_centi("21,5", 4) == -1);
     CHECK(ha_parse_centi(".5", 2) == -1);
@@ -123,8 +132,23 @@ static void reads_a_setpoint(void)
     CHECK(ha_parse_centi("", 0) == -1);
 }
 
+/* The topic Home Assistant sends a setpoint to, back to its zone. */
+static void reads_a_setpoint_topic(void)
+{
+    unsigned zone;
+    char topic[40];
+    snprintf(topic, sizeof topic, HA_SETPOINT_TOPIC_FMT, 11u);
+    CHECK(ha_setpoint_topic(topic, &zone) && zone == 11);
+    CHECK(!ha_setpoint_topic("tado/zone/11/setpoint/set/x", &zone));
+    CHECK(!ha_setpoint_topic("tado/zone/0/setpoint/set", &zone));
+    CHECK(!ha_setpoint_topic("tado/zone/256/setpoint/set", &zone));
+    CHECK(!ha_setpoint_topic("tado/zone/1234/setpoint/set", &zone));
+    CHECK(!ha_setpoint_topic("tado/gateway/pair/set", &zone));
+}
+
 void run_ha_tests(void)
 {
+    reads_a_setpoint_topic();
     a_room_is_a_climate_entity();
     reads_a_setpoint();
     a_discovery_config_byte_for_byte();

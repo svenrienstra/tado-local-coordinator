@@ -106,7 +106,7 @@ struct gateway {
         struct tado_report r; /* its owner's reports */
         uint32_t discovered;
     } rooms[INSTALL_MAX_ROOMS];
-    char topic[96], payload[768]; /* publishing scratch */
+    char topic[96], payload[1280]; /* publishing scratch; a climate config is about 1 KB */
 };
 
 /* A free-running millisecond clock comes in through link_ops.now_ms. */

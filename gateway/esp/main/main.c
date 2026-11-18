@@ -231,7 +231,7 @@ enum command_kind { COMMAND_ANNOUNCE, COMMAND_MESSAGE, COMMAND_WEB };
 struct command {
     enum command_kind kind;
     char topic[48];
-    char payload[16];
+    char payload[32]; /* "20.200000000000003": Home Assistant sends floats as Python prints them */
     size_t len;
     bool retained;
 };
@@ -248,7 +248,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         ESP_LOGI(TAG, "mqtt connected");
         atomic_store(&mqtt_up, true);
         esp_mqtt_client_subscribe(mqtt, HA_PAIR_TOPIC, 1);
-        esp_mqtt_client_subscribe(mqtt, "tado/zone/+/setpoint/set", 1);
+        esp_mqtt_client_subscribe(mqtt, HA_SETPOINT_TOPICS, 1);
         c.kind = COMMAND_ANNOUNCE;
         xQueueSend(commands, &c, 0);
         break;

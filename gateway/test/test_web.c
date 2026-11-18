@@ -53,13 +53,13 @@ static void reads_a_form_body(void)
 {
     char out[32];
     const char *body = "zone=3&name=Living+room%21&x=";
-    CHECK(web_form(body, strlen(body), "name", out, sizeof out) && strcmp(out, "Living room!") == 0);
-    CHECK(web_form(body, strlen(body), "zone", out, sizeof out) && strcmp(out, "3") == 0);
-    CHECK(web_form(body, strlen(body), "x", out, sizeof out) && strcmp(out, "") == 0);
-    CHECK(!web_form(body, strlen(body), "nam", out, sizeof out));
-    CHECK(!web_form("name=a%2", 8, "name", out, sizeof out));   /* a cut escape */
-    CHECK(!web_form("name=a%00b", 10, "name", out, sizeof out)); /* no NULs */
-    CHECK(!web_form(body, strlen(body), "name", out, 5));       /* does not fit */
+    CHECK(web_form(body, strlen(body), "name", out, sizeof out) == WEB_FIELD_OK && strcmp(out, "Living room!") == 0);
+    CHECK(web_form(body, strlen(body), "zone", out, sizeof out) == WEB_FIELD_OK && strcmp(out, "3") == 0);
+    CHECK(web_form(body, strlen(body), "x", out, sizeof out) == WEB_FIELD_OK && strcmp(out, "") == 0);
+    CHECK(web_form(body, strlen(body), "nam", out, sizeof out) == WEB_FIELD_MISSING);
+    CHECK(web_form("name=a%2", 8, "name", out, sizeof out) == WEB_FIELD_BAD);   /* a cut escape */
+    CHECK(web_form("name=a%00b", 10, "name", out, sizeof out) == WEB_FIELD_BAD); /* no NULs */
+    CHECK(web_form(body, strlen(body), "name", out, 5) == WEB_FIELD_BAD);       /* does not fit */
 }
 
 static void checks_basic_authorization(void)

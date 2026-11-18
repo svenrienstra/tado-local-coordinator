@@ -59,7 +59,7 @@ static const struct gwlink_ops LINK = {.write = link_write, .read = link_read, .
 
 static struct {
     char topic[96];
-    char payload[768];
+    char payload[1280];
     bool retain;
 } published[64];
 static size_t n_published;
@@ -717,7 +717,20 @@ static void a_setpoint_from_home_assistant_reaches_the_device(void)
     static char out[256];
     CHECK(web("POST", "/api/rooms/11", "setpoint=19", out, sizeof out) == 200);
     CHECK(gateway_room(&gw, 11)->setpoint == 1900);
-    CHECK(web("POST", "/api/rooms/11", "setpoint=26", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms/11", "setpoint=26", out, sizeof out) == 400 && strstr(out, "5-25"));
+    /* Nothing changes when one of two fails, not the name either. */
+    CHECK(web("POST", "/api/rooms/11", "name=Kitchen&setpoint=30", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms/11", "name=Kitchen&setpoint=21.000000000000000000000000000001", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms/11", "name=Bad%22&setpoint=20", out, sizeof out) == 400);
+    CHECK(strcmp(gateway_room(&gw, 11)->name, "Living") == 0 && gateway_room(&gw, 11)->setpoint == 1900);
+    /* The same setpoint again: no flash write, but the device gets it again
+     * (that ends an overlay set on it). */
+    int saves = install_saves;
+    jobs_before = jobs;
+    CHECK(web("POST", "/api/rooms/11", "setpoint=19", out, sizeof out) == 200 && install_saves == saves);
+    for (int i = 0; i < 200 && jobs == jobs_before; i++)
+        run(1);
+    CHECK(jobs > jobs_before);
     restart_from_flash();
     CHECK(gateway_room(&gw, 11)->setpoint == 1900);
 }
