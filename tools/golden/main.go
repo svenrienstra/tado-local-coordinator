@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"freedo/tado"
@@ -95,6 +96,91 @@ func main() {
 	put("zone.boost_on", boost(tado.BoostCoAP{Enabled: true, Home: true, SchedC: 20, NewOverlay: true}))
 	put("zone.boost_cancel", boost(tado.BoostCoAP{Enabled: false, Home: true, SchedC: 20, NewOverlay: true}))
 	put("zone.boost_away", boost(tado.BoostCoAP{Enabled: true, Home: false, SchedC: 20, NewOverlay: true}))
+
+	thermostatDocuments()
+}
+
+// thermostatInstall is freedo's own test installation (tado/zone_read_test.go):
+// a wall thermostat with hot water (zone 0) as the heat source of circuit 1,
+// and a valve in heating zone 4 on that circuit.
+const thermostatInstall = `
+version: 1
+home_id: 7654321
+network_key: "000102030405060708090a0b0c0d0e0f"
+coordinator:
+  eui: "1000000000c51b00"
+  serial: IB0000000001
+devices:
+  - {kind: thermostat, eui: "2000000000c51b00", serial: RU0000000001, label: hall}
+  - {kind: valve, eui: "3000000000c51b00", serial: VA0000000001, label: study}
+zones:
+  - {number: 0, name: water, kind: hotwater, members: [RU0000000001]}
+  - {number: 4, name: study, kind: heating, circuit: 1, members: [VA0000000001], reporter: VA0000000001}
+circuits:
+  - {id: 1, name: house, heat_source: RU0000000001}
+`
+
+// thermostatDocuments puts the documents freedo's emulator serves in that
+// installation (the d/config of the thermostat before and after it reported
+// its interface module id, the valve's, and the zone documents), as their
+// bodies, assembled over Block2.
+func thermostatDocuments() {
+	in := must(tado.Parse([]byte(thermostatInstall)))
+	offset := 120 // tag 02b2: fixed, so the host's zone and date stay out of the bytes
+	in.Options.UTCOffsetMin = &offset
+	ru := must(in.Resolve("RU0000000001")).WireEUI()
+	va := must(in.Resolve("VA0000000001")).WireEUI()
+	e := tado.NewEmu(in.EmuConfig(), nil)
+	home := strconv.FormatUint(uint64(in.HomeID), 10)
+	mid := uint16(0x7000)
+
+	request := func(dev []byte, code string, path []string, options []tado.CoAPOption, payload []byte) *tado.CoAPMessage {
+		mid++
+		pkt := must(tado.BuildCoAP(tado.CoAPReq{
+			Type: "CON", Code: code, MID: mid, Token: []byte{0x21}, Path: path, Options: options, Payload: payload,
+			SrcEUI: dev, DstEUI: in.CoordinatorEUI(), SrcPort: 5683, DstPort: 4005,
+		}))
+		f := must(tado.BuildData(in.NetworkKey(), 0x41, in.CoordinatorEUI(), dev[:5], tado.WrapAppPayload(pkt, 700, nil)))
+		for _, a := range e.OnFrame(f.Bytes()) {
+			if a.Kind != tado.ActData {
+				continue
+			}
+			df, err := tado.ParseData(in.NetworkKey(), a.Bytes)
+			if err != nil {
+				continue
+			}
+			if app := tado.ParseApp(df.Plaintext); app != nil && app.CoAP != nil && app.CoAP.MID == mid {
+				return app.CoAP
+			}
+		}
+		panic(fmt.Sprintf("no answer to %v", path))
+	}
+	// A document, block by block (64-byte blocks, as the devices take them).
+	document := func(dev []byte, path ...string) []byte {
+		var body []byte
+		for block := 0; ; block++ {
+			m := request(dev, "0.01", path, []tado.CoAPOption{{Num: 23, Val: []byte{byte(block<<4 | 2)}}}, nil)
+			if m.Code != "2.05" {
+				panic(fmt.Sprintf("%v: %s", path, m.Code))
+			}
+			body = append(body, m.Payload...)
+			if o, ok := m.Option(23); !ok || o.Val[len(o.Val)-1]&0x08 == 0 {
+				return body
+			}
+		}
+	}
+
+	put("in.thermostat_eui", ru)
+	put("in.thermostat_valve_eui", va)
+	put("in.thermostat_home_id", []byte{byte(in.HomeID >> 24), byte(in.HomeID >> 16), byte(in.HomeID >> 8), byte(in.HomeID)})
+	put("thermostat.config_no_module", document(ru, "d", "RU0000000001", "config"))
+	// The thermostat reports its interface module id (tag 015d) in hvac/codes:
+	// 80, as on a Vaillant ecoTEC plus on eBUS (freedo issue #37).
+	request(ru, "0.03", []string{"h", home, "hvac", "codes"}, nil, []byte{0x01, 0x5d, 0x02, 0x00, 0x50})
+	put("thermostat.config_module_80", document(ru, "d", "RU0000000001", "config"))
+	put("thermostat.valve_config", document(va, "d", "VA0000000001", "config"))
+	put("thermostat.zone_heating", document(va, "h", home, "z", "4", "config"))
+	put("thermostat.zone_hotwater", document(ru, "h", home, "z", "0", "config"))
 }
 
 func put(name string, b []byte) { fmt.Printf("%s %s\n", name, hex.EncodeToString(b)) }

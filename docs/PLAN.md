@@ -520,11 +520,21 @@ the issue's, where the id is **80 (`ebus_a`)**; freedo's table puts 0, 1, 5-9,
 - Answer a thermostat's `d/config` before it has a room: it holds back every
   report after `d/config`, `hvac/codes` included, until that is answered.
 - Serve the thermostat's shape of the document: no `021a`, no `0149`, `0158`
-  `0000`.
+  `0000`. Built and checked byte for byte against freedo's emulator
+  (`tado_device_document`, `golden/vectors.txt` `thermostat.*`), with the
+  valve's shape, freedo's table of valid ids (`tado_thermostat_module_ok`),
+  and the zone document of a heating zone on the thermostat's circuit
+  (`tado_zone_document`: `8200`, the heat source in `8000`, `6060`).
+- Hot water is not needed for our plant and stays out of the gateway for
+  now; the zone document already builds a hot-water zone (checked against
+  freedo), so it is mostly gateway work for whoever wants it later. Open: in
+  freedo's example the thermostat owns its hot-water zone (role `0d`); does
+  it need that zone when hot water control is not used?
 
 ### M5 — Home Assistant polish  *(optional / later)*
 Pairing and device removal from Home Assistant, more device features (battery,
-window state, child lock), whether schedules should move into the gateway, and
+window state, child lock), hot water (a room type, its Home Assistant entity,
+the thermostat's hot-water role), whether schedules should move into the gateway, and
 rooms that heat only while the boiler runs (3.8).
 
 ## 6. Testing strategy

@@ -38,9 +38,65 @@ struct tado_zone_role {
 size_t tado_device_config(uint8_t *out, size_t cap, uint32_t home_id, const struct tado_zone_role *roles,
                           size_t n_roles);
 
+/* A device's d/config document in each shape, in the captured tag order
+ * (freedo PROTOCOL.md "d/config write"):
+ *   0143 [015d] 015c 02b3 [02b2] [021a 0149] 015e.. 0158
+ * The valve shape carries 021a=0000 and 0149=00 and 0158=0200; the wall
+ * thermostat's carries neither and 0158=0000 (freedo's app and watch
+ * captures); ours for the sensor neither, with 0158=0200. Checked against
+ * freedo's builders (golden/vectors.txt thermostat.*). */
+enum tado_doc_shape { TADO_DOC_SENSOR, TADO_DOC_VALVE, TADO_DOC_THERMOSTAT };
+
+struct tado_device_doc {
+    enum tado_doc_shape shape;
+    uint32_t home_id;           /* 015c, never 0 */
+    uint16_t module;            /* 015d; 0 leaves it out, and the device keeps its own */
+    uint8_t offline_schedule;   /* 02b3 */
+    bool has_utc_offset;        /* 02b2: no capture carries it; freedo sends it */
+    int16_t utc_offset_min;
+    const struct tado_zone_role *roles; /* 015e records, in this order */
+    size_t n_roles;
+};
+
+size_t tado_device_document(uint8_t *out, size_t cap, const struct tado_device_doc *d);
+
+/* The interface module id (015d) of a wall thermostat selects its boiler bus
+ * image (freedo tado/interface_module.go, catalogue 0x08007f28): the family it
+ * drives ("opentherm", "ebus_a", ...), NULL for an id no image answers. */
+const char *tado_module_family(uint16_t module);
+
+/* An id that may be served to a wall thermostat: a known image, not 0 (the
+ * default image), not 112 (the valve's, which stops the boiler interface) and
+ * not 0x7fff (which tears the controller down). */
+bool tado_thermostat_module_ok(uint16_t module);
+#define TADO_VALVE_MODULE 112
+
 /* A heating zone with owner as owner and measuring endpoint, no circuit,
  * freedo's PID defaults and open-window detection on. */
 size_t tado_zone_with_owner(uint8_t *out, size_t cap, const uint8_t owner[8]);
+
+/* A zone document (h/<home>/z/<n>/config), as freedo builds it and a capture
+ * of the bridge's pins (freedo tado/build_zone_config.go, zone 10, 313 bytes):
+ *   6020 kind, 63e0=1, 63a0 owner/z/s, [8200 valve/z/cpe for each valve
+ *   member], 8400 member/z/p for each (hot water: the owner's once more),
+ *   8000 /z/s for each, the circuit's heat source first when it is no member,
+ *   then for heating: [6060 circuit] 6040 owner/z/p and the controller and
+ *   open-window tags.
+ * Members are in order, the owner first. */
+struct tado_zone_member {
+    uint8_t eui[8];
+    bool valve;
+};
+
+struct tado_zone_doc {
+    bool hot_water;
+    const struct tado_zone_member *members;
+    size_t n_members;
+    const uint8_t *heat_source; /* the circuit's heat source (the wall thermostat), NULL: no circuit */
+    uint8_t circuit;
+};
+
+size_t tado_zone_document(uint8_t *out, size_t cap, const struct tado_zone_doc *z);
 
 /* A heating zone's state as a device reads it (GET h/<home>/z/<n>/s) and as
  * the coordinator writes it (PUT z/s?id=<n>), in the captured tag order

@@ -356,6 +356,65 @@ static void test_tado_zone_blocks_as_freedo_writes_them(void)
     CHECK(tado_zone_block(out, 20, &(struct tado_zone_block){.on = true, .setpoint = 2000}) == 0);
 }
 
+/* The d/config documents freedo's emulator serves the wall thermostat (before
+ * and after it reported its interface module id) and a valve, byte for byte:
+ * the same shapes, with freedo's choices for 02b3 (1) and 02b2 (+120 min). */
+static void test_tado_documents_as_freedo_serves_them(void)
+{
+    const struct vec *home = V("in.thermostat_home_id");
+    uint32_t home_id = (uint32_t)home->data[0] << 24 | (uint32_t)home->data[1] << 16 | (uint32_t)home->data[2] << 8 |
+                       home->data[3];
+    /* Owner of its hot water zone 0; 0x02 for zone 4, the heating zone of the
+     * circuit it is the heat source of. */
+    static const struct tado_zone_role thermostat_roles[] = {{0x0d, 0}, {0x02, 4}};
+    struct tado_device_doc d = {.shape = TADO_DOC_THERMOSTAT, .home_id = home_id, .offline_schedule = 1,
+                                .has_utc_offset = true, .utc_offset_min = 120, .roles = thermostat_roles,
+                                .n_roles = 2};
+    uint8_t doc[128];
+    size_t n = tado_device_document(doc, sizeof doc, &d);
+    CHECK_VEC(doc, n, "thermostat.config_no_module"); /* no 015d: it keeps its own */
+    d.module = 80;
+    n = tado_device_document(doc, sizeof doc, &d);
+    CHECK_VEC(doc, n, "thermostat.config_module_80");
+
+    static const struct tado_zone_role valve_roles[] = {{TADO_ROLE_OWNER, 4}};
+    struct tado_device_doc v = {.shape = TADO_DOC_VALVE, .home_id = home_id, .module = TADO_VALVE_MODULE,
+                                .offline_schedule = 1, .has_utc_offset = true, .utc_offset_min = 120,
+                                .roles = valve_roles, .n_roles = 1};
+    n = tado_device_document(doc, sizeof doc, &v);
+    CHECK_VEC(doc, n, "thermostat.valve_config");
+}
+
+/* The zone documents of that installation: the heating zone of a valve on the
+ * thermostat's circuit, and the thermostat's hot water. */
+static void test_tado_zone_documents_as_freedo_builds_them(void)
+{
+    struct tado_zone_member valve = {.valve = true}, thermostat = {.valve = false};
+    memcpy(valve.eui, V("in.thermostat_valve_eui")->data, 8);
+    memcpy(thermostat.eui, V("in.thermostat_eui")->data, 8);
+    uint8_t doc[320];
+    struct tado_zone_doc heating = {.members = &valve, .n_members = 1, .heat_source = thermostat.eui, .circuit = 1};
+    size_t n = tado_zone_document(doc, sizeof doc, &heating);
+    CHECK_VEC(doc, n, "thermostat.zone_heating");
+    struct tado_zone_doc water = {.hot_water = true, .members = &thermostat, .n_members = 1};
+    n = tado_zone_document(doc, sizeof doc, &water);
+    CHECK_VEC(doc, n, "thermostat.zone_hotwater");
+    CHECK(tado_zone_document(doc, 100, &heating) == 0);
+    CHECK(tado_zone_document(doc, sizeof doc, &(struct tado_zone_doc){0}) == 0); /* no members */
+}
+
+/* Which interface module ids a wall thermostat may be given. */
+static void test_tado_thermostat_module_ids(void)
+{
+    CHECK(tado_thermostat_module_ok(80) && strcmp(tado_module_family(80), "ebus_a") == 0); /* Vaillant eBUS, #37 */
+    CHECK(tado_thermostat_module_ok(71) && strcmp(tado_module_family(71), "opentherm") == 0);
+    CHECK(!tado_thermostat_module_ok(0));       /* the default image */
+    CHECK(!tado_thermostat_module_ok(112));     /* the valve's: stops the boiler interface */
+    CHECK(!tado_thermostat_module_ok(0x7fff));  /* tears the controller down */
+    CHECK(!tado_thermostat_module_ok(999) && tado_module_family(999) == NULL);
+    CHECK(strcmp(tado_module_family(0), "ebus_a") == 0); /* in a family, still refused */
+}
+
 static void test_tado_block_answers(void)
 {
     uint8_t doc[512], out[256];
@@ -566,6 +625,9 @@ int main(int argc, char **argv)
     test_tado_documents();
     test_tado_block_answers();
     test_tado_zone_blocks_as_freedo_writes_them();
+    test_tado_documents_as_freedo_serves_them();
+    test_tado_zone_documents_as_freedo_builds_them();
+    test_tado_thermostat_module_ids();
     test_tado_resources();
     test_tado_reports();
     run_session_tests();

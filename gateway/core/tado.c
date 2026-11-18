@@ -48,23 +48,68 @@ static void tlv_u16(struct out *o, uint16_t tag, uint16_t v)
 
 static size_t done(const struct out *o) { return o->overflow ? 0 : o->len; }
 
+size_t tado_device_document(uint8_t *out, size_t cap, const struct tado_device_doc *d)
+{
+    if (d->home_id == 0)
+        return 0; /* a device applies nothing with 0 */
+    struct out o = {.p = out, .cap = cap};
+    uint8_t home[4] = {(uint8_t)(d->home_id >> 24), (uint8_t)(d->home_id >> 16), (uint8_t)(d->home_id >> 8),
+                       (uint8_t)d->home_id};
+    tlv_u8(&o, 0x0143, 0); /* trace off */
+    if (d->module)
+        tlv_u16(&o, 0x015d, d->module);
+    tlv(&o, 0x015c, home, 4);
+    tlv_u8(&o, 0x02b3, d->offline_schedule);
+    if (d->has_utc_offset)
+        tlv_u16(&o, 0x02b2, (uint16_t)d->utc_offset_min);
+    if (d->shape == TADO_DOC_VALVE) {
+        tlv_u16(&o, 0x021a, 0); /* a constant no store reads */
+        tlv_u8(&o, 0x0149, 0);  /* horizontal */
+    }
+    for (size_t i = 0; i < d->n_roles; i++) {
+        uint8_t r[2] = {d->roles[i].role, d->roles[i].zone};
+        tlv(&o, 0x015e, r, 2);
+    }
+    tlv_u16(&o, 0x0158, d->shape == TADO_DOC_THERMOSTAT ? 0x0000 : 0x0200); /* notify on a remote change */
+    return done(&o);
+}
+
 size_t tado_device_config(uint8_t *out, size_t cap, uint32_t home_id, const struct tado_zone_role *roles,
                           size_t n_roles)
 {
-    if (home_id == 0)
-        return 0; /* a device applies nothing with 0 */
-    struct out o = {.p = out, .cap = cap};
-    uint8_t home[4] = {(uint8_t)(home_id >> 24), (uint8_t)(home_id >> 16), (uint8_t)(home_id >> 8),
-                       (uint8_t)home_id};
-    tlv_u8(&o, 0x0143, 0);
-    tlv(&o, 0x015c, home, 4);
-    tlv_u8(&o, 0x02b3, 0);
-    for (size_t i = 0; i < n_roles; i++) {
-        uint8_t r[2] = {roles[i].role, roles[i].zone};
-        tlv(&o, 0x015e, r, 2);
-    }
-    tlv_u16(&o, 0x0158, 0x0200);
-    return done(&o);
+    struct tado_device_doc d = {.shape = TADO_DOC_SENSOR, .home_id = home_id, .roles = roles, .n_roles = n_roles};
+    return tado_device_document(out, cap, &d);
+}
+
+const char *tado_module_family(uint16_t module)
+{
+    static const struct {
+        uint16_t id;
+        const char *family;
+    } FAMILIES[] = {
+        {71, "opentherm"},
+        {0, "ebus_a"},   {1, "ebus_a"},   {5, "ebus_a"},   {6, "ebus_a"},   {7, "ebus_a"},   {9, "ebus_a"},
+        {80, "ebus_a"},  {83, "ebus_a"},  {200, "ebus_a"},
+        {121, "ebus_b"},
+        {4, "ebus_c"},   {122, "ebus_c"},
+        {20, "km"},      {22, "km"},      {23, "km"},      {24, "km"},      {50, "km"},
+        {41, "ht_bus"},  {43, "ht_bus"},  {44, "ht_bus"},
+        {120, "ems"},
+        {100, "bsb"},    {110, "bsb"},    {111, "bsb"},    {123, "bsb"},
+        {31, "scom"},    {32, "scom"},
+        {3, "analog"},   {10, "analog"},  {11, "analog"},  {12, "analog"},  {30, "analog"},
+        {40, "analog"},  {42, "analog"},  {60, "analog"},  {61, "analog"},
+        {202, "stub"}, /* drives no boiler bus */
+    };
+    for (size_t i = 0; i < sizeof FAMILIES / sizeof FAMILIES[0]; i++)
+        if (FAMILIES[i].id == module)
+            return FAMILIES[i].family;
+    return NULL;
+}
+
+bool tado_thermostat_module_ok(uint16_t module)
+{
+    return module != 0 && module != 0x7fff && module != TADO_VALVE_MODULE && tado_module_family(module) != NULL;
 }
 
 bool tado_zone_uri(char *out, size_t cap, const uint8_t device[8])
@@ -87,25 +132,61 @@ static void tlv_uri(struct out *o, uint16_t tag, const char *base, const char *r
     tlv(o, tag, s, (size_t)n);
 }
 
-size_t tado_zone_with_owner(uint8_t *out, size_t cap, const uint8_t owner[8])
+/* A device's endpoint coap://[fe80::...]/z/<res>; false when it does not fit. */
+static bool endpoint(struct out *o, uint16_t tag, const uint8_t eui[8], const char *res)
 {
     char base[48];
-    if (!tado_zone_uri(base, sizeof base, owner))
+    if (!tado_zone_uri(base, sizeof base, eui))
+        return false;
+    tlv_uri(o, tag, base, res);
+    return true;
+}
+
+size_t tado_zone_document(uint8_t *out, size_t cap, const struct tado_zone_doc *z)
+{
+    if (z->n_members == 0)
         return 0;
+    const uint8_t *owner = z->members[0].eui;
     struct out o = {.p = out, .cap = cap};
-    tlv_u8(&o, 0x6020, 1); /* heating */
-    tlv_u8(&o, 0x63e0, 1);
-    tlv_uri(&o, 0x63a0, base, "s");
-    tlv_uri(&o, 0x8400, base, "p");
-    tlv_uri(&o, 0x8000, base, "s");
-    tlv_uri(&o, 0x6040, base, "p");
-    tlv_u16(&o, 0x6080, 1000); /* Kp */
-    tlv_u16(&o, 0x60a0, 500);  /* Ki */
-    tlv_u16(&o, 0x60c0, 1500); /* Kd */
-    tlv_u8(&o, 0x60e0, 1);     /* open-window detection */
-    tlv_u16(&o, 0x62c0, 900);  /* open-window time, s */
-    tlv_u16(&o, 0x6380, 900);
-    return done(&o);
+    bool ok = true;
+    tlv_u8(&o, 0x6020, z->hot_water ? 2 : 1);
+    tlv_u8(&o, 0x63e0, 1); /* enabled */
+    ok &= endpoint(&o, 0x63a0, owner, "s");
+    for (size_t i = 0; !z->hot_water && i < z->n_members; i++)
+        if (z->members[i].valve)
+            ok &= endpoint(&o, 0x8200, z->members[i].eui, "cpe");
+    for (size_t i = 0; i < z->n_members; i++)
+        ok &= endpoint(&o, 0x8400, z->members[i].eui, "p");
+    if (z->hot_water)
+        ok &= endpoint(&o, 0x8400, owner, "p");
+    bool circuit = !z->hot_water && z->heat_source;
+    bool source_is_member = false;
+    for (size_t i = 0; circuit && i < z->n_members; i++)
+        source_is_member |= memcmp(z->members[i].eui, z->heat_source, 8) == 0;
+    if (circuit && !source_is_member)
+        ok &= endpoint(&o, 0x8000, z->heat_source, "s");
+    for (size_t i = 0; i < z->n_members; i++)
+        ok &= endpoint(&o, 0x8000, z->members[i].eui, "s");
+    if (!z->hot_water) {
+        if (circuit)
+            tlv_u8(&o, 0x6060, z->circuit);
+        ok &= endpoint(&o, 0x6040, owner, "p");
+        tlv_u16(&o, 0x6080, 1000); /* Kp */
+        tlv_u16(&o, 0x60a0, 500);  /* Ki */
+        tlv_u16(&o, 0x60c0, 1500); /* Kd */
+        tlv_u8(&o, 0x60e0, 1);     /* open-window detection */
+        tlv_u16(&o, 0x62c0, 900);  /* open-window time, s */
+        tlv_u16(&o, 0x6380, 900);  /* refresh, s */
+    }
+    return ok ? done(&o) : 0;
+}
+
+size_t tado_zone_with_owner(uint8_t *out, size_t cap, const uint8_t owner[8])
+{
+    struct tado_zone_member m = {.valve = false};
+    memcpy(m.eui, owner, 8);
+    struct tado_zone_doc z = {.members = &m, .n_members = 1};
+    return tado_zone_document(out, cap, &z);
 }
 
 size_t tado_zone_block(uint8_t *out, size_t cap, const struct tado_zone_block *b)
