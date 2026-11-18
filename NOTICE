@@ -1,0 +1,29 @@
+tado-coordinator — third-party components
+=========================================
+
+This project's own source code and documentation are licensed under the MIT
+License; see LICENSE.
+
+It also uses, without redistributing, third-party components under their own
+licenses:
+
+1. freedo — reference/freedo, a git submodule (https://github.com/CappyT/freedo)
+   Licensed under the Apache License 2.0. Used as a protocol reference and a
+   test oracle: tools/golden runs freedo's builders to generate
+   golden/vectors.txt, and the gateway tests replay freedo's captured frames.
+   No freedo code is part of the firmware or the gateway.
+
+2. TI CoreSDK for CC13xx/CC26xx — NOT included in this repository.
+   The CC1312 firmware builds against driverlib and the startup code of the
+   TI CoreSDK, installed separately (see firmware/README.md). It is
+   Copyright (c) Texas Instruments Incorporated and licensed under
+   BSD-3-Clause; consult the SDK's own license.
+
+3. ESP-IDF and esp-mqtt — NOT included in this repository.
+   The gateway firmware builds against Espressif's ESP-IDF and the esp-mqtt
+   component, fetched by the ESP-IDF build. Licensed under the Apache
+   License 2.0.
+
+tado° is a trademark of tado° GmbH. This project is not affiliated with or
+endorsed by tado° GmbH, Texas Instruments Incorporated or Espressif Systems;
+those names are used only to describe interoperability.

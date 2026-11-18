@@ -88,11 +88,15 @@ chip built for it.
 | `firmware/`   | CC1312 MAC engine   | C        | PHY/MAC/CSL/CCM*, real-time, autonomous |
 | `gateway/`    | ESP32-S3 gateway    | C        | tado protocol, rooms, MQTT, setup page; ESP-IDF build in `gateway/esp` |
 | `host/`       | Java bench tool     | Java     | ran M-1 on a Mac; reference for the gateway |
-| `tools/`      | test vectors, sniffing | Go, Python | `tools/golden` builds the vectors from freedo |
+| `tools/`      | test vectors, sniffing, traces | Go, Python | `tools/golden` builds the vectors from freedo; `tools/trace` turns host-link captures into redacted text traces |
 | `reference/`  | specs & oracles     | -        | freedo, as a git submodule |
 | `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec `docs/JOIN.md`, wiring `docs/WIRING.md` |
 
 ## Legal
+
+MIT licensed, code and documentation alike (`LICENSE`); the facts in
+`docs/` may be cited with a link back. Third-party components it builds
+against or tests with are listed in `NOTICE`.
 
 tado is a trademark of its owner, used here only to describe the devices this
 interoperates with. Not affiliated with tado. For use with devices you own.
