@@ -8,6 +8,7 @@
 #include "link.h"
 #include "mac.h"
 #include "reasm.h"
+#include "tado.h"
 
 /* The coordinator logic of the gateway, ported from the Java host's
  * JoinSession (host/.../join/JoinSession.java), which is its spec.
@@ -70,8 +71,18 @@ struct session_ops {
     /* A progress line, without a newline. */
     void (*log)(void *ctx, const char *line);
     void (*rng)(void *ctx, uint8_t *out, size_t n);
-    /* Wall-clock Unix seconds, for the devices' time requests. */
+    /* Wall-clock Unix seconds, for the devices' time requests; 0 while the
+     * clock is not set, and the request goes unanswered (the device asks
+     * again) rather than setting it to 1970. */
     uint32_t (*unix_time)(void *ctx);
+    /* Optional. A report a device PUT or POSTed (d/<serial>/sen,
+     * h/<home>/z/<n>/act, ...) that decoded, with its Uri-Path. Called before
+     * its 2.04 goes out; it must not call back into the session. */
+    void (*on_report)(void *ctx, const uint8_t device[8], const char *path, const struct tado_report *r);
+    /* Optional. The joiner answered d/pair under our network key. It may call
+     * session_set_zone to give the new device a zone, so that its config
+     * request is answered. */
+    void (*on_joined)(void *ctx, const uint8_t device[8]);
 };
 
 struct session_answer {
@@ -145,7 +156,11 @@ void session_set_home(struct session *s, uint32_t home_id, uint32_t overlay_ms);
  * False when the zone table is full. */
 bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], uint16_t setpoint);
 
-/* Opens a pair window: the CC1312's own window opens through the host link. */
+/* Forgets the zone: it is no longer served. */
+void session_drop_zone(struct session *s, uint8_t zone);
+
+/* Opens a pair window here only: the caller opens the CC1312's own with
+ * PAIR_WINDOW over the host link. */
 void session_open_pair_window(struct session *s);
 void session_close_pair_window(struct session *s);
 enum session_pair_state session_pair_state(const struct session *s);

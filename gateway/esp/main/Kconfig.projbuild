@@ -1,0 +1,42 @@
+menu "tado gateway"
+
+    config TADO_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config TADO_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config TADO_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtt://homeassistant.local"
+        help
+            The Home Assistant broker, e.g. mqtt://192.168.1.10. No TLS
+            (docs/PLAN.md 3.3).
+
+    config TADO_MQTT_USERNAME
+        string "MQTT username"
+        default ""
+
+    config TADO_MQTT_PASSWORD
+        string "MQTT password"
+        default ""
+
+    config TADO_SNTP_SERVER
+        string "SNTP server"
+        default "pool.ntp.org"
+
+    config TADO_CC1312_TX_GPIO
+        int "GPIO to the CC1312's UART RX (DIO2)"
+        default 17
+
+    config TADO_CC1312_RX_GPIO
+        int "GPIO from the CC1312's UART TX (DIO3)"
+        default 18
+
+    config TADO_CC1312_RESET_GPIO
+        int "GPIO to the CC1312's nRST (open drain)"
+        default 4
+
+endmenu

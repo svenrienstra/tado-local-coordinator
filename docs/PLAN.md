@@ -1,7 +1,8 @@
 # Build plan — clean-room tado coordinator on CC1312 + ESP32
 
-Status: **M-1 built, not yet run on hardware**. This document is the agreed
-design and sequencing. It supersedes ad-hoc notes; update it as decisions firm
+Status: **M0 works on air, M1 done, M2 built and tested on the Mac and
+waiting for the ESP32-S3 board**. This document is the agreed design and
+sequencing. It supersedes ad-hoc notes; update it as decisions firm
 up.
 
 ---
@@ -13,7 +14,7 @@ one home, under fully local control, built from scratch, as one self-contained
 device:
 
 - **CC1312R1** as the radio / MAC / CSL real-time engine.
-- An **ESP32 gateway** running the tado protocol and the coordinator logic. It
+- An **ESP32-S3 gateway** running the tado protocol and the coordinator logic. It
   publishes device state (temperature, setpoint, battery, …) as **MQTT** events
   and takes commands (setpoint, pair window, …) over MQTT.
 - **Home Assistant** picks the devices up through MQTT discovery. No container or
@@ -162,6 +163,13 @@ short trains for synchronised devices, batch writes).
 A first sketch; fixed in M2/M3. Home Assistant controls **rooms (zones, 3.8)**,
 not single valves.
 
+As built in M2 (`gateway/app/ha.c`): sensors only, each published (discovery,
+retained) once it has a value: per device temperature, humidity, battery (V),
+signal and last seen; per zone temperature, setpoint and heating demand. The
+pair command `tado/gateway/pair/set` takes the zone number; the device that
+joins becomes that zone's owner. The climate entity and
+`tado/zone/<n>/setpoint/set` come with M3.
+
 - **Discovery:** for each zone, a retained config message on
   `homeassistant/climate/tado_zone_<n>/config`: one climate entity per room.
   Each device also gets sensors (battery, signal, its own temperature, valve
@@ -283,7 +291,7 @@ either way.
 - Host link: the framed protocol (3.4) over UART.
 
 ### 4.2 ESP32 gateway — the brain (C, ESP-IDF)
-- Host link client over UART2 at 460800 baud; resets the CC1312 through its
+- Host link client over UART1 at 460800 baud; resets the CC1312 through its
   `RESET_N` (wiring: [`WIRING.md`](WIRING.md)).
 - 6LoWPAN, CoAP (CON/ACK, block-wise where the devices use it), CCM*
   **decrypt/validate only** (3.5). The portable C core of `firmware/src`
@@ -380,6 +388,15 @@ Assistant.
 **Gate:** a valve joins the gateway and its temperature shows up in Home
 Assistant.
 
+**Built (2026-11-18), not yet on hardware:** the gateway application in
+[`gateway/app`](../gateway/README.md) and its ESP-IDF build for the ESP32-S3 in
+`gateway/esp` (builds with ESP-IDF v6.1.1). On the Mac, against the CC1312
+firmware itself: configuring the CC1312 and configuring it again after it
+rebooted, frame counters in reserved blocks, the kept carrier, a pair command
+through to the joiner owning its zone, and a device report out as Home
+Assistant MQTT messages. `gateway/esp/tools/identity_nvs.py` carries the bench
+tool's identity over, so the sensor joined to it (zone 11) stays joined.
+
 ### M3 — Control writes
 One zone with one valve: a setpoint from Home Assistant over MQTT reaches the
 valve in its CSL window and is confirmed by its next report. Then boost and
@@ -428,7 +445,8 @@ rooms that heat only while the boiler runs (3.8).
   fuse/read-out locks.
 
 ## 8. Defaults (change only with a reason)
-- Gateway: ESP32 (WROOM, 4 MB flash), ESP-IDF, C.
+- Gateway: ESP32-S3 (ESP32-S3-DevKitC-1, WROOM-1 N16R8: 16 MB flash, 8 MB
+  octal PSRAM), ESP-IDF v6.1, C.
 - MQTT: Mosquitto (the Home Assistant add-on), Home Assistant MQTT discovery,
   no TLS, broker username and password.
 - Persistence: ESP NVS for the network key, counter floor and device table.

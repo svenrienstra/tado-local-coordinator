@@ -24,3 +24,10 @@ bridge/.esphome/
 # Coordinator state: identity (holds the network key) and captures. --state
 # defaults to ./state wherever the tool runs.
 state/
+
+# ESP-IDF gateway: generated config (it holds the credentials), fetched
+# components, and the credentials file it is built from.
+gateway/esp/sdkconfig
+gateway/esp/sdkconfig.old
+gateway/esp/sdkconfig.secrets
+gateway/esp/managed_components/

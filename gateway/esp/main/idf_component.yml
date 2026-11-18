@@ -1,0 +1,5 @@
+dependencies:
+  # Removed from ESP-IDF in v6.0; the same mqtt_client.h API.
+  espressif/mqtt: "^1.0.0"
+  idf:
+    version: ">=6.1"

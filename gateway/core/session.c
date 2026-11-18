@@ -6,6 +6,7 @@
 
 #include "bytes.h"
 #include "coap.h"
+#include "hexstr.h"
 #include "lowpan.h"
 #include "tado.h"
 
@@ -26,21 +27,6 @@ static void say(struct session *s, const char *fmt, ...)
     va_end(ap);
     s->ops.log(s->ops.ctx, line);
 }
-
-static const char *hex_str(const uint8_t *b, size_t n, char *buf, size_t cap)
-{
-    static const char digits[] = "0123456789abcdef";
-    size_t i = 0;
-    for (; i < n && 2 * i + 2 < cap; i++) {
-        buf[2 * i] = digits[b[i] >> 4];
-        buf[2 * i + 1] = digits[b[i] & 0xf];
-    }
-    buf[2 * i] = '\0';
-    return buf;
-}
-
-/* An EUI in wire order, as the host prints it. */
-static const char *eui_str(const uint8_t eui[8], char buf[17]) { return hex_str(eui, 8, buf, 17); }
 
 static bool elapsed(uint32_t now, uint32_t stamp, uint32_t interval) { return now - stamp >= interval; }
 
@@ -124,6 +110,13 @@ bool session_set_zone(struct session *s, uint8_t zone, const uint8_t owner[8], u
     return true;
 }
 
+void session_drop_zone(struct session *s, uint8_t zone)
+{
+    struct session_zone *z = zone_find(s, zone);
+    if (z)
+        z->used = false;
+}
+
 void session_open_pair_window(struct session *s)
 {
     s->pair = SESSION_PAIR_WAITING;
@@ -192,6 +185,8 @@ static void on_pair_answer(struct session *s, bool pairing_key, const struct coa
     } else if (m->code == COAP_CODE(2, 4)) {
         say(s, "2.04 under our network key: %s JOINED", eui_str(src, e));
         s->pair = SESSION_PAIR_JOINED;
+        if (s->ops.on_joined)
+            s->ops.on_joined(s->ops.ctx, src);
     } else {
         say(s, "d/pair answered %u.%02u", m->code >> 5, m->code & 0x1f);
         s->pair = SESSION_PAIR_FAILED;
@@ -532,15 +527,23 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
         a = answer_slot(s, now);
         n = tado_auth_token_answer(a->packet, sizeof a->packet, &m, id, sizeof id, d, s->coordinator, src);
     } else if (coap_path_is(&m, "time")) {
+        uint32_t unix = s->ops.unix_time(s->ops.ctx);
+        if (unix == 0) {
+            say(s, "time from %s: no wall-clock time yet, not answered", eui_str(src, e));
+            return;
+        }
         say(s, "time from %s", eui_str(src, e));
         a = answer_slot(s, now);
-        n = tado_time_answer(a->packet, sizeof a->packet, &m, s->ops.unix_time(s->ops.ctx), d, s->coordinator, src);
+        n = tado_time_answer(a->packet, sizeof a->packet, &m, unix, d, s->coordinator, src);
     } else if (m.code == COAP_PUT || m.code == COAP_POST) {
         /* Reports (d/<serial>/..., z/p): the bridge's default 2.04, or the device retries. */
         say(s, "%u.%02u %s from %s, answering 2.04: %s", m.code >> 5, m.code & 0x1f, path, eui_str(src, e),
             hex_str(m.payload, m.payload_len, hex, sizeof hex));
         if (m.code == COAP_PUT)
             on_device_overlay(s, src, &m, &p, now);
+        struct tado_report r;
+        if (s->ops.on_report && tado_report_decode(m.payload, m.payload_len, &r))
+            s->ops.on_report(s->ops.ctx, src, path, &r);
         a = answer_slot(s, now);
         n = tado_changed_answer(a->packet, sizeof a->packet, &m, d, s->coordinator, src);
     } else {

@@ -2,15 +2,17 @@
 
 A clean-room, local coordinator for tado V3+ 868 MHz heating devices (radiator
 valves, wall thermostats), built from scratch around a **TI CC1312R1** radio and
-an **ESP32** gateway that speaks MQTT to Home Assistant. No tado cloud, no
+an **ESP32-S3** gateway that speaks MQTT to Home Assistant. No tado cloud, no
 HomeKit, no key extraction.
 
 > Status: **M-1 and M0 pass on air** (2026-11-17). A tado wireless temperature
 > sensor joined our network with our key, and the CC1312 firmware plus the Java
 > bench tool keep it served: Enhanced ACKs, reports, `time`, and replies behind
 > short trains on its channel sample. **M1** (2026-11-18): the ESP gateway's
-> protocol core is written and tested in C (`gateway/`); the ESP application
-> around it is M2. See [`docs/PLAN.md`](docs/PLAN.md).
+> protocol core is written and tested in C (`gateway/`). **M2** (2026-11-18):
+> the gateway application (CC1312 handling, pairing into a zone, Home
+> Assistant MQTT) and its ESP-IDF build are written and tested on the Mac;
+> next is running it on an ESP32-S3. See [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Why this can work without recovering any key
 
@@ -44,7 +46,7 @@ setpoint come back the same way.
 | Path          | Tier                | Language | Notes |
 |---------------|---------------------|----------|-------|
 | `firmware/`   | CC1312 MAC engine   | C        | PHY/MAC/CSL/CCM*, real-time, autonomous |
-| `gateway/`    | ESP32 gateway       | C        | tado protocol, device state, MQTT (not started) |
+| `gateway/`    | ESP32-S3 gateway    | C        | tado protocol, device state, MQTT; ESP-IDF build in `gateway/esp` |
 | `host/`       | Java bench tool     | Java     | runs M-1 on a Mac; reference for the gateway |
 | `reference/`  | specs & oracles     | -        | freedo as behavioural oracle |
 | `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec `docs/JOIN.md`, wiring `docs/WIRING.md` |

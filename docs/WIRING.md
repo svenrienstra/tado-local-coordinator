@@ -58,20 +58,29 @@ both the host link and remote reflashing.
 The Java host opens the USB-serial port. `make flash` goes through the XDS110.
 Both work with the default build.
 
-## Gateway mode — ESP32 next to the board
+## Gateway mode — ESP32-S3 next to the board
+
+The gateway is an **ESP32-S3-DevKitC-1 with an ESP32-S3-WROOM-1 N16R8** (16 MB
+flash, 8 MB octal PSRAM). The pins are set in `gateway/esp/main/Kconfig.projbuild`.
 
 ```
-        ESP32 (DevKitC)                         CC1312R1 board
+     ESP32-S3-DevKitC-1 (N16R8)                 CC1312R1 board
    ┌──────────────────────┐                ┌───────────────────────────┐
-   │ GPIO17  (UART2 TX) ──┼──────────────► │ DIO2  (upper header pin 3) │
-   │ GPIO16  (UART2 RX) ◄─┼─────────────── │ DIO3  (upper header pin 4) │
-   │ GPIO25  open-drain ──┼──────────────► │ nRST  (lower header)       │
-   │ GPIO26  open-drain ──┼──────────────► │ BL_PIN (BTN1's DIO)        │
+   │ GPIO17  (UART1 TX) ──┼──────────────► │ DIO2  (upper header pin 3) │
+   │ GPIO18  (UART1 RX) ◄─┼─────────────── │ DIO3  (upper header pin 4) │
+   │ GPIO4   open-drain ──┼──────────────► │ nRST  (lower header)       │
+   │ GPIO5   open-drain ──┼──────────────► │ BL_PIN (BTN1's DIO)        │
    │ GND ─────────────────┼─────────────── │ GND (JTAG header or VBAT−) │
    └──────────┬───────────┘                └─────────────┬─────────────┘
-              │ USB 5 V                                  │ micro-USB 5 V
+              │ USB 5 V ("UART" port)                    │ micro-USB 5 V
           [ power ]                                  [ power ]
 ```
+
+Pins to leave alone on an N16R8: GPIO26-32 (the module's flash), GPIO33-37
+(its octal PSRAM), GPIO19/20 (USB), GPIO43/44 (UART0, the console on the
+"UART" USB port), and the strapping pins GPIO0, 3, 45 and 46. GPIO48 (or 38 on
+board v1.1) drives the RGB LED. The S3 has no GPIO22-25. GPIO5 is wired for
+remote reflash and not used by the gateway yet.
 
 - **Cross the UART lines:** ESP TX goes to CC1312 RX (DIO2), and ESP RX comes
   from CC1312 TX (DIO3). The UART runs at 460800 8N1. The bootloader detects
@@ -91,12 +100,10 @@ Both work with the default build.
   numbers ([SWRZ078]), so any pin on the D0–D15 header is allowed. Build with
   `make clean all BL_PIN=<dio>`. The backdoor is off unless `BL_PIN` is set, so
   a wrong guess cannot leave the board stuck in the bootloader.
-- **Drive GPIO25 and GPIO26 as open-drain** (pull low or release, never drive
+- **Drive GPIO4 and GPIO5 as open-drain** (pull low or release, never drive
   high). The RESET button and BTN1 also pull those nets to ground, and while the
   ESP boots its pins float, which reads as released.
 - **Share ground.** Both sides use 3.3 V logic, so no level shifter is needed.
-- GPIO16/17 are free on an ESP32-WROOM DevKitC. On a WROVER module they belong
-  to the PSRAM, so pick two other GPIOs there.
 
 ### Alternative: reflash by hand
 
@@ -109,20 +116,20 @@ skip remote reflash instead:
   (with `BL_PIN` set to its DIO), and run
   `cc2538-bsl.py -p /dev/tty.usbserial-XXXX -e -w -v coordinator.hex`. The
   XDS110 on the JTAG header works too.
-- GPIO26 and the backdoor wire are not needed. GPIO25 → nRST stays, so the ESP
+- GPIO5 and the backdoor wire are not needed. GPIO4 → nRST stays, so the ESP
   can still reset a hung CC1312.
 
 The resistance check below decides which wiring applies.
 
 ### Remote reflash sequence
 
-1. GPIO26 low (hold the backdoor pin).
-2. GPIO25 low for about 10 ms, then release it (reset).
-3. Wait about 100 ms, then release GPIO26. The ROM bootloader is now running on
+1. GPIO5 low (hold the backdoor pin).
+2. GPIO4 low for about 10 ms, then release it (reset).
+3. Wait about 100 ms, then release GPIO5. The ROM bootloader is now running on
    DIO2/DIO3.
 4. The ESP sends the new image with the ROM bootloader protocol (the one
    `cc2538-bsl` speaks), taking the image from an OTA download.
-5. Pulse GPIO25 again to boot the new image.
+5. Pulse GPIO4 again to boot the new image.
 
 ## Still to find out on the board
 

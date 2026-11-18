@@ -535,6 +535,8 @@ int main(int argc, char **argv)
     test_tado_reports();
     run_session_tests();
     run_hlc_tests();
+    run_gateway_tests();
+    run_ha_tests();
     test_replays_freedos_captures();
 
     printf("%d checks, %d failures\n", checks, failures);

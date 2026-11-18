@@ -55,15 +55,49 @@ static void stub_rng(void *ctx, uint8_t *out, size_t n)
     }
 }
 
-/* 2026-11-09T12:00:00Z plus the session clock. */
+static bool clock_unset; /* before SNTP: the gateway's unix_time gives 0 */
+
+/* 2026-11-06T12:00:00Z plus the session clock. */
 static uint32_t stub_unix(void *ctx)
 {
     (void)ctx;
-    return 1793966400u + now / 1000u;
+    return clock_unset ? 0 : 1793966400u + now / 1000u;
 }
 
-static const struct session_ops OPS = {
-    .tx = stub_tx, .log = stub_log, .rng = stub_rng, .unix_time = stub_unix};
+/* The last report handed to the gateway. */
+static struct {
+    int count;
+    uint8_t device[8];
+    char path[64];
+    struct tado_report r;
+} reported;
+
+static void stub_on_report(void *ctx, const uint8_t device[8], const char *path, const struct tado_report *r)
+{
+    (void)ctx;
+    reported.count++;
+    memcpy(reported.device, device, 8);
+    snprintf(reported.path, sizeof reported.path, "%s", path);
+    reported.r = *r;
+}
+
+/* What the gateway does with a new device: the zone its pair command named. */
+static int joined_count;
+static int join_into_zone = -1;
+
+static void stub_on_joined(void *ctx, const uint8_t device[8])
+{
+    joined_count++;
+    if (join_into_zone >= 0)
+        CHECK(session_set_zone(ctx, (uint8_t)join_into_zone, device, SESSION_DEFAULT_SETPOINT));
+}
+
+static const struct session_ops OPS = {.tx = stub_tx,
+                                       .log = stub_log,
+                                       .rng = stub_rng,
+                                       .unix_time = stub_unix,
+                                       .on_report = stub_on_report,
+                                       .on_joined = stub_on_joined};
 
 static const uint8_t *coordinator(void) { return V("in.coord_eui")->data; }
 static const uint8_t *joiner(void) { return V("in.joiner_eui")->data; }
@@ -75,7 +109,13 @@ static void fresh(struct session *s, bool pair_window)
     now = 0;
     rng_state = 1;
     refuse_next = 0;
-    session_init(s, coordinator(), V("in.network_key")->data, &OPS, now);
+    clock_unset = false;
+    memset(&reported, 0, sizeof reported);
+    joined_count = 0;
+    join_into_zone = -1;
+    struct session_ops ops = OPS;
+    ops.ctx = s;
+    session_init(s, coordinator(), V("in.network_key")->data, &ops, now);
     if (pair_window)
         session_open_pair_window(s);
 }
@@ -740,6 +780,97 @@ static void a_thirty_day_overlay_lasts_thirty_days(void)
     CHECK(unicasts() == 2 && path_of((size_t)unicast(1), "z/s"));
 }
 
+/* The gateway's view of the join: told once, it gives the device the zone the
+ * pair command named, and the device's config request is then answered. */
+static void a_joined_device_gets_the_zone_the_gateway_gives_it_and_its_config(void)
+{
+    static struct session s;
+    fresh(&s, true);
+    session_set_home(&s, 4242, SESSION_DEFAULT_OVERLAY_MS);
+    join_into_zone = 3;
+    beacon_answered(&s);
+    router_solicitation(&s);
+    tx_done(&s, 2, LINK_SENT);
+    tx_done(&s, 3, LINK_ACKED);
+    struct coap_msg a = ack(coap_of(2).mid, COAP_CODE(2, 4));
+    from_joiner(&s, false, &a);
+    from_joiner(&s, false, &a); /* a repeated 2.04 is not a second join */
+    CHECK(session_pair_state(&s) == SESSION_PAIR_JOINED && joined_count == 1);
+
+    struct coap_msg m = get(0x0301, "d/VA0000000001/config");
+    from_joiner(&s, false, &m);
+    struct coap_msg c = coap_of(n_sent - 1);
+    static const struct tado_zone_role owner3 = {TADO_ROLE_OWNER, 3};
+    uint8_t want[64];
+    size_t wn = tado_device_config(want, sizeof want, 4242, &owner3, 1);
+    CHECK(c.code == COAP_CODE(2, 5) && c.mid == 0x0301);
+    CHECK_BYTES(c.payload, c.payload_len, want, wn);
+}
+
+/* Without a zone a joined device's config request goes unanswered: the
+ * gateway must give it one. */
+static void a_device_without_a_zone_gets_no_config(void)
+{
+    static struct session s;
+    fresh(&s, false);
+    session_set_home(&s, 4242, SESSION_DEFAULT_OVERLAY_MS);
+    struct coap_msg m = get(0x0302, "d/VA0000000001/config");
+    from_joiner(&s, false, &m);
+    CHECK(n_sent == 0);
+}
+
+/* The sensor's report as it sent it (docs/SENSOR.md): handed to the gateway
+ * decoded, with its device and path, and answered 2.04. */
+static void hands_a_decoded_report_to_the_gateway(void)
+{
+    static struct session s;
+    serving_zone11(&s, SESSION_DEFAULT_OVERLAY_MS);
+    static const uint8_t sen[] = {0x01, 0x62, 0x02, 0x10, 0x4f, 0x01, 0x2d, 0x02, 0x07, 0x4a, 0x01, 0x2e, 0x02,
+                                  0x07, 0x4b, 0x01, 0x35, 0x02, 0x02, 0x35, 0x01, 0x36, 0x01, 0x04};
+    struct coap_msg put = msg(COAP_CON, COAP_PUT, 0x0501, "d/SU2922080256/sen");
+    put.payload = sen;
+    put.payload_len = sizeof sen;
+    from_joiner(&s, false, &put);
+    CHECK(reported.count == 1 && memcmp(reported.device, joiner(), 8) == 0);
+    CHECK(strcmp(reported.path, "d/SU2922080256/sen") == 0);
+    CHECK(reported.r.fields == (TADO_BATTERY | TADO_TEMPERATURE | TADO_TEMPERATURE_RAW | TADO_HUMIDITY | TADO_LIGHT));
+    CHECK(reported.r.battery_mv == 4175 && reported.r.temperature == 1866 && reported.r.temperature_raw == 1867);
+    CHECK(reported.r.humidity == 565 && reported.r.light == 4);
+    CHECK(coap_of(0).code == COAP_CODE(2, 4));
+
+    /* A malformed body is still answered (or the device retries), not reported. */
+    static const uint8_t torn[] = {0x01, 0x2d, 0x02, 0x07};
+    put = msg(COAP_CON, COAP_PUT, 0x0502, "d/SU2922080256/sen");
+    put.payload = torn;
+    put.payload_len = sizeof torn;
+    from_joiner(&s, false, &put);
+    CHECK(reported.count == 1 && n_sent == 2 && coap_of(1).code == COAP_CODE(2, 4));
+
+    /* A repeat of an answered report is answered again, not reported twice. */
+    put = msg(COAP_CON, COAP_PUT, 0x0501, "d/SU2922080256/sen");
+    put.payload = sen;
+    put.payload_len = sizeof sen;
+    from_joiner(&s, false, &put);
+    CHECK(reported.count == 1);
+}
+
+/* Before SNTP the clock says 1970: the device would take it, so the request
+ * goes unanswered and the device asks again. */
+static void leaves_time_unanswered_until_the_clock_is_set(void)
+{
+    static struct session s;
+    fresh(&s, false);
+    clock_unset = true;
+    struct coap_msg time = msg(COAP_CON, COAP_GET, 0x0601, "time");
+    from_joiner(&s, false, &time);
+    CHECK(n_sent == 0);
+
+    clock_unset = false;
+    time.mid = 0x0602;
+    from_joiner(&s, false, &time);
+    CHECK(n_sent == 1 && coap_of(0).code == COAP_CODE(2, 5) && coap_of(0).payload_len == 5);
+}
+
 void run_session_tests(void)
 {
     verbose = getenv("VERBOSE") != NULL;
@@ -767,4 +898,8 @@ void run_session_tests(void)
     an_overlay_the_device_ends_or_that_is_not_its_zone_leaves_nothing_to_write();
     an_overlay_time_of_zero_keeps_the_devices_setpoint_until_changed();
     a_thirty_day_overlay_lasts_thirty_days();
+    a_joined_device_gets_the_zone_the_gateway_gives_it_and_its_config();
+    a_device_without_a_zone_gets_no_config();
+    hands_a_decoded_report_to_the_gateway();
+    leaves_time_unanswered_until_the_clock_is_set();
 }

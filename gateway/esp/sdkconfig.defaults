@@ -1,0 +1,7 @@
+CONFIG_IDF_TARGET="esp32s3"
+# ESP32-S3-WROOM-1 N16R8: 16 MB flash. Its 8 MB octal PSRAM is not used yet.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Millisecond ticks: the host-link loop waits in 10-50 ms steps.
+CONFIG_FREERTOS_HZ=1000
