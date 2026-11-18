@@ -800,7 +800,7 @@ static void the_home_goes_away_and_comes_back(void)
     int jobs_before = jobs;
     gateway_command(&gw, HA_HOME_SET_TOPIC, "elsewhere", 9, false);
     gateway_command(&gw, HA_HOME_SET_TOPIC, "away", 4, true); /* retained: old */
-    CHECK(!gw.away && logged("home state refused"));
+    CHECK(!gw.away && logged("tado/home/set refused"));
     gateway_command(&gw, HA_HOME_SET_TOPIC, "away", 4, false);
     CHECK(gw.away && strcmp(last_on(HA_HOME_STATE_TOPIC), "away") == 0);
     CHECK(a_job_within(jobs_before));
@@ -846,7 +846,7 @@ static void a_boost_from_home_assistant(void)
     CHECK(web("GET", "/api/state", "", out, sizeof out) == 200 && strstr(out, want_left));
 
     gateway_command(&gw, "tado/zone/11/preset/set", "eco", 3, false);
-    CHECK(logged("preset for zone 11 refused"));
+    CHECK(logged("tado/zone/11/preset/set refused"));
     CHECK(web("POST", "/api/rooms/11", "boost=0", out, sizeof out) == 200);
     CHECK(gateway_boost_left(&gw, 11) == 0);
     CHECK(web("POST", "/api/rooms/11", "boost=0", out, sizeof out) == 409); /* none runs */

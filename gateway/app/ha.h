@@ -82,13 +82,15 @@ size_t ha_device_state(char *out, size_t cap, const struct ha_device *d);
 size_t ha_zone_state_topic(char *out, size_t cap, unsigned zone);
 /* What the gateway has a room heat to now (its setpoint, away temperature or
  * boost: its own word, which Home Assistant's climate entity shows), and
- * whether the device confirmed it: no write pending and its report says so. */
+ * whether the device confirmed it: no write pending and its report says so.
+ * Zeroed when there is none to show. */
 struct ha_target {
     bool known;
     bool on;
     uint16_t setpoint; /* centi-degrees C, when on */
     bool confirmed;
     bool stale; /* unconfirmed for longer than the gateway's stale time */
+    bool boost; /* a boost the gateway started runs */
 };
 
 /* The setpoint the device reported it heats to (an overlay's, else its own);

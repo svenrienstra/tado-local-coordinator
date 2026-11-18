@@ -127,12 +127,43 @@ enum web_field web_form(const char *body, size_t len, const char *key, char *out
     return WEB_FIELD_MISSING;
 }
 
-/* A decimal number 0-255 that is the whole string. */
-static int number(const char *s)
+/* A decimal number 0..max that is the whole string, or -1. */
+static long number(const char *s, unsigned long max)
 {
     char *end;
     unsigned long v = strtoul(s, &end, 10);
-    return *s && *end == '\0' && v <= 255 && s[0] != '-' && s[0] != '+' ? (int)v : -1;
+    return s[0] >= '0' && s[0] <= '9' && *end == '\0' && v <= max ? (long)v : -1;
+}
+
+/* A form field of 1 or 0. */
+static enum web_field form_flag(const char *body, size_t len, const char *key, bool *out)
+{
+    char v[4];
+    enum web_field f = web_form(body, len, key, v, sizeof v);
+    if (f == WEB_FIELD_OK && (strcmp(v, "1") == 0 || strcmp(v, "0") == 0))
+        *out = v[0] == '1';
+    else if (f == WEB_FIELD_OK)
+        f = WEB_FIELD_BAD;
+    return f;
+}
+
+/* A form field of degrees C in the setpoint range, in centi-C; with allow_off
+ * also "off" (0). */
+static enum web_field form_centi(const char *body, size_t len, const char *key, bool allow_off, int32_t *out)
+{
+    char v[32];
+    enum web_field f = web_form(body, len, key, v, sizeof v);
+    if (f != WEB_FIELD_OK)
+        return f;
+    *out = allow_off && strcmp(v, "off") == 0 ? 0 : ha_parse_centi(v, strlen(v));
+    return (*out == 0 && allow_off) || ha_setpoint_ok(*out) ? WEB_FIELD_OK : WEB_FIELD_BAD;
+}
+
+static int range_error(struct out *o, const char *key)
+{
+    char error[64];
+    snprintf(error, sizeof error, "%s: %u-%u degrees C", key, HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
+    return answer(o, 400, error);
 }
 
 static int rooms(struct gateway *g, const char *rest, const char *body, size_t len, struct out *o)
@@ -158,50 +189,37 @@ static int rooms(struct gateway *g, const char *rest, const char *body, size_t l
     if (strcmp(rest, "/delete") == 0) {
         gateway_delete_room(g, (uint8_t)zone);
     } else if (*rest == '\0') {
-        /* Both checked before either changes anything. */
-        char value[32], away[32], boost[4];
-        enum web_field setpoint = web_form(body, len, "setpoint", value, sizeof value);
-        enum web_field away_field = web_form(body, len, "away_setpoint", away, sizeof away);
-        enum web_field boost_field = web_form(body, len, "boost", boost, sizeof boost);
-        int32_t c = setpoint == WEB_FIELD_OK ? ha_parse_centi(value, strlen(value)) : 0;
-        /* "off" (or 0): off in away. */
-        int32_t a = away_field != WEB_FIELD_OK ? 0 : strcmp(away, "off") == 0 ? 0 : ha_parse_centi(away, strlen(away));
+        /* All checked before any changes anything. */
+        int32_t c = 0, a = 0;
+        bool boost = false;
+        enum web_field setpoint = form_centi(body, len, "setpoint", false, &c);
+        enum web_field away = form_centi(body, len, "away_setpoint", true, &a);
+        enum web_field boosting = form_flag(body, len, "boost", &boost);
         if (named == WEB_FIELD_OK && !install_name_ok(name, strlen(name)))
             named = WEB_FIELD_BAD;
-        if (setpoint == WEB_FIELD_OK && !ha_setpoint_ok(c))
-            setpoint = WEB_FIELD_BAD;
-        if (away_field == WEB_FIELD_OK && a != 0 && !ha_setpoint_ok(a))
-            away_field = WEB_FIELD_BAD;
-        if (boost_field == WEB_FIELD_OK && strcmp(boost, "1") != 0 && strcmp(boost, "0") != 0)
-            boost_field = WEB_FIELD_BAD;
-        if (named == WEB_FIELD_MISSING && setpoint == WEB_FIELD_MISSING && away_field == WEB_FIELD_MISSING &&
-            boost_field == WEB_FIELD_MISSING)
+        if (named == WEB_FIELD_MISSING && setpoint == WEB_FIELD_MISSING && away == WEB_FIELD_MISSING &&
+            boosting == WEB_FIELD_MISSING)
             return answer(o, 400, "name, setpoint, away_setpoint or boost required");
         if (named == WEB_FIELD_BAD)
             return answer(o, 400, "bad name");
-        if (setpoint == WEB_FIELD_BAD || away_field == WEB_FIELD_BAD) {
-            char error[64];
-            snprintf(error, sizeof error, "%s: %u-%u degrees C", setpoint == WEB_FIELD_BAD ? "setpoint" : "away_setpoint",
-                     HA_SETPOINT_MIN / 100, HA_SETPOINT_MAX / 100);
-            return answer(o, 400, error);
-        }
-        if (boost_field == WEB_FIELD_BAD)
+        if (setpoint == WEB_FIELD_BAD)
+            return range_error(o, "setpoint");
+        if (away == WEB_FIELD_BAD)
+            return range_error(o, "away_setpoint");
+        if (boosting == WEB_FIELD_BAD)
             return answer(o, 400, "boost: 1 or 0");
         /* A setpoint ends a boost: the two together would contradict. */
-        if (boost_field == WEB_FIELD_OK && setpoint == WEB_FIELD_OK)
+        if (boosting == WEB_FIELD_OK && setpoint == WEB_FIELD_OK)
             return answer(o, 400, "boost and setpoint: one at a time");
-        if (boost_field == WEB_FIELD_OK && boost[0] == '1' && !session_zone(&g->session, (uint8_t)zone))
-            return answer(o, 409, "boost: the room has no device");
-        if (boost_field == WEB_FIELD_OK && boost[0] == '0' && !gateway_boost_left(g, (uint8_t)zone))
-            return answer(o, 409, "boost: none runs");
+        /* The boost first: the only change that can still be refused. */
+        if (boosting == WEB_FIELD_OK && !gateway_boost(g, (uint8_t)zone, boost))
+            return answer(o, 409, boost ? "boost: the room has no device" : "boost: none runs");
         if (named == WEB_FIELD_OK)
             gateway_rename_room(g, (uint8_t)zone, name);
         if (setpoint == WEB_FIELD_OK)
             gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c);
-        if (away_field == WEB_FIELD_OK)
+        if (away == WEB_FIELD_OK)
             gateway_set_away_setpoint(g, (uint8_t)zone, (uint16_t)a);
-        if (boost_field == WEB_FIELD_OK)
-            gateway_boost(g, (uint8_t)zone, boost[0] == '1');
     } else {
         return answer(o, 404, "not found");
     }
@@ -214,7 +232,7 @@ static int devices(struct gateway *g, const char *rest, const char *body, size_t
     char value[8];
     if (*rest++ != '/' || !eui_parse(rest, strlen(rest), eui) || !gateway_device(g, eui))
         return answer(o, 404, "no such device");
-    int zone = web_form(body, len, "zone", value, sizeof value) == WEB_FIELD_OK ? number(value) : -1;
+    long zone = web_form(body, len, "zone", value, sizeof value) == WEB_FIELD_OK ? number(value, 255) : -1;
     if (zone < 0)
         return answer(o, 400, "zone required");
     if (!gateway_assign(g, eui, (uint8_t)zone))
@@ -246,13 +264,8 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
     }
     if (strcmp(path, "/api/settings") == 0) {
         char value[8];
-        int32_t minutes = -1;
-        char *end;
-        if (web_form(body, body_len, "stale_minutes", value, sizeof value) == WEB_FIELD_OK && value[0] >= '0' &&
-            value[0] <= '9') {
-            long v = strtol(value, &end, 10);
-            minutes = *end == '\0' ? (int32_t)v : -1;
-        }
+        long minutes = web_form(body, body_len, "stale_minutes", value, sizeof value) == WEB_FIELD_OK
+                           ? number(value, INSTALL_STALE_MINUTES_MAX) : -1;
         if (minutes < 0 || !gateway_set_stale_minutes(g, (uint16_t)minutes)) {
             char error[48];
             snprintf(error, sizeof error, "stale_minutes: 0-%u", INSTALL_STALE_MINUTES_MAX);
@@ -261,11 +274,10 @@ int web_handle(struct gateway *g, const char *method, const char *path, const ch
         return ok(&o);
     }
     if (strcmp(path, "/api/home") == 0) {
-        char away[4];
-        if (web_form(body, body_len, "away", away, sizeof away) != WEB_FIELD_OK ||
-            (strcmp(away, "1") != 0 && strcmp(away, "0") != 0))
+        bool away;
+        if (form_flag(body, body_len, "away", &away) != WEB_FIELD_OK)
             return answer(&o, 400, "away: 1 or 0");
-        gateway_set_away(g, away[0] == '1');
+        gateway_set_away(g, away);
         return ok(&o);
     }
     if (strncmp(path, "/api/rooms", 10) == 0)

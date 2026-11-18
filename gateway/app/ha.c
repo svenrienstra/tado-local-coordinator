@@ -7,6 +7,11 @@
 #include "out.h"
 
 /* A fixed-point value with `decimals` digits after the point: 1866, 2 -> 18.66. */
+static void put_bool(struct out *o, const char *key, bool v)
+{
+    put(o, "%s\"%s\":%s", o->len > 1 ? "," : "", key, v ? "true" : "false");
+}
+
 static void put_fixed(struct out *o, const char *key, int32_t value, unsigned decimals)
 {
     static const uint32_t scale[] = {1, 10, 100, 1000};
@@ -202,14 +207,14 @@ size_t ha_zone_state(char *out, size_t cap, const struct tado_report *z, const s
         put_fixed(&o, "setpoint", c, 2);
     if (z->fields & TADO_DEMAND)
         put_fixed(&o, "demand", z->demand, 0);
-    if ((z->fields & TADO_OVERLAY) && z->overlay == TADO_OVERLAY_TIMER)
-        put(&o, "%s\"boost\":true", o.len > 1 ? "," : "");
-    if (target && target->known) {
+    if (target->boost)
+        put_bool(&o, "boost", true);
+    if (target->known) {
         if (target->on)
             put_fixed(&o, "target", target->setpoint, 2);
-        put(&o, "%s\"confirmed\":%s", o.len > 1 ? "," : "", target->confirmed ? "true" : "false");
+        put_bool(&o, "confirmed", target->confirmed);
         if (target->stale)
-            put(&o, ",\"stale\":true");
+            put_bool(&o, "stale", true);
     }
     put(&o, "}");
     return done(&o);

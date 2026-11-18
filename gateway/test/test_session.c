@@ -1010,8 +1010,9 @@ static void a_boost_runs_its_time_or_until_cancelled(void)
 {
     static struct session s;
     serving_zone11(&s, 3600000u);
-    CHECK(!session_end_overlay(&s, 11, now)); /* none runs */
+    CHECK(session_boost_left_ms(&s, 11, now) == 0); /* none runs */
     CHECK(session_boost(&s, 11, 2500, 1800000u, now));
+    CHECK(session_boost_left_ms(&s, 11, now) == 1800000u);
     last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800, .overlay = TADO_OVERLAY_TIMER,
                                             .overlay_on = true, .overlay_setpoint = 2500, .marker = true});
     struct coap_msg m = get(0x0701, "h/4242/z/11/s");
@@ -1037,7 +1038,8 @@ static void a_boost_runs_its_time_or_until_cancelled(void)
     serving_zone11(&s, 3600000u);
     CHECK(session_boost(&s, 11, 2500, 1800000u, now));
     tx_done(&s, (int)n_sent, LINK_ACKED);
-    CHECK(session_end_overlay(&s, 11, now));
+    CHECK(session_write_zone(&s, 11, now)); /* a cancel ends it */
+    CHECK(session_boost_left_ms(&s, 11, now) == 0);
     last_write_is(&(struct tado_zone_block){.on = true, .setpoint = 1800, .marker = true});
 }
 
@@ -1078,6 +1080,7 @@ static void keeps_the_kind_of_overlay_the_device_reports(void)
     struct coap_msg m = overlay_put(0x0901, "h/4242/z/11/overlay", timer, sizeof timer);
     from_joiner(&s, false, &m);
     CHECK(s.zones[0].overlay && s.zones[0].overlay_kind == TADO_OVERLAY_TIMER);
+    CHECK(session_boost_left_ms(&s, 11, now) == 0); /* the device's timer is not our boost */
     m = overlay_put(0x0902, "h/4242/z/11/overlay", OVERLAY_21C, sizeof OVERLAY_21C);
     from_joiner(&s, false, &m);
     CHECK(s.zones[0].overlay_kind == TADO_OVERLAY_MANUAL);

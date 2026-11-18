@@ -42,6 +42,37 @@ static void the_installation_survives_its_encoding(void)
     CHECK(install_encode(&full, blob, sizeof blob) == INSTALL_MAX_BLOB);
 }
 
+/* A later version's blob: an unknown record, a room record with a field
+ * after its name, a settings flag this version does not know. The rooms and
+ * devices it knows survive. */
+static void a_later_versions_installation_still_reads(void)
+{
+    static const uint8_t blob[] = {
+        INSTALL_VERSION,
+        INSTALL_TAG_SETTINGS, 5, 0x03, 7, 30, 0, 0x55,          /* flags: away + an unknown bit; one byte more */
+        9, 2, 0xaa, 0xbb,                                       /* an unknown record */
+        INSTALL_TAG_ROOM, 11, 4, 0x08, 0x07, 0xdc, 0x05, 3, 'D', 'e', 'n', 0x42, 0x42, /* zone 4, 18.00, 15.00, "Den", more */
+        INSTALL_TAG_DEVICE, 13, 1, 2, 3, 4, 5, 0xc5, 0x1b, 0, 4, 2, 'S', 'U', 0x99, /* serial "SU": too short */
+        INSTALL_TAG_END, 0,
+    };
+    struct install in;
+    CHECK(!install_decode(blob, sizeof blob, &in)); /* a 2-byte serial is no serial */
+
+    static const uint8_t ok[] = {
+        INSTALL_VERSION,
+        INSTALL_TAG_SETTINGS, 5, 0x03, 7, 30, 0, 0x55,
+        9, 2, 0xaa, 0xbb,
+        INSTALL_TAG_ROOM, 11, 4, 0x08, 0x07, 0xdc, 0x05, 3, 'D', 'e', 'n', 0x42, 0x42,
+        INSTALL_TAG_DEVICE, 15, 1, 2, 3, 4, 5, 0xc5, 0x1b, 0, 4, 4, 'S', 'U', '1', '2', 0x99,
+        INSTALL_TAG_END, 0,
+    };
+    CHECK(install_decode(ok, sizeof ok, &in));
+    CHECK(in.away && in.next_zone == 7 && in.stale_minutes == 30);
+    CHECK(in.n_rooms == 1 && in.rooms[0].zone == 4 && in.rooms[0].setpoint == 1800 && in.rooms[0].away_setpoint == 1500);
+    CHECK(strcmp(in.rooms[0].name, "Den") == 0);
+    CHECK(in.n_devices == 1 && in.devices[0].zone == 4 && strcmp(in.devices[0].serial, "SU12") == 0);
+}
+
 /* Names go into JSON and MQTT as they are. */
 static void a_room_name_needs_no_escaping(void)
 {
@@ -81,6 +112,7 @@ static void checks_basic_authorization(void)
 void run_web_tests(void)
 {
     the_installation_survives_its_encoding();
+    a_later_versions_installation_still_reads();
     a_room_name_needs_no_escaping();
     reads_a_form_body();
     checks_basic_authorization();

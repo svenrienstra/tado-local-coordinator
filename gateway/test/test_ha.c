@@ -71,18 +71,18 @@ static void a_zone_shows_the_setpoint_it_heats_to(void)
     r.overlay_setpoint = 2100;
     ha_merge(&z, &r);
     char out[128];
-    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":18.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){0}) && strcmp(out, "{\"setpoint\":18.00}") == 0);
 
     struct tado_report overlay = {.fields = TADO_OVERLAY | TADO_OVERLAY_SETPOINT, .overlay = 2,
                                   .overlay_setpoint = 2100};
     ha_merge(&z, &overlay);
-    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":21.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){0}) && strcmp(out, "{\"setpoint\":21.00}") == 0);
 
     /* The zone's own measure wins over the owner's temperature. */
     struct tado_report m = {.fields = TADO_TEMPERATURE | TADO_ZONE_TEMPERATURE, .temperature = 1900,
                             .zone_temperature = 1875};
     ha_merge(&z, &m);
-    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"temperature\":18.75,\"setpoint\":21.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){0}) && strcmp(out, "{\"temperature\":18.75,\"setpoint\":21.00}") == 0);
     CHECK(ha_zone_entities(&z) == (1u << HA_ZONE_TEMPERATURE | 1u << HA_ZONE_SETPOINT | 1u << HA_ZONE_CLIMATE));
 }
 
@@ -167,9 +167,12 @@ static void away_and_boost(void)
     struct tado_report z = {.fields = TADO_SETPOINT | TADO_OVERLAY | TADO_OVERLAY_SETPOINT, .setpoint = 2000,
                             .overlay = TADO_OVERLAY_TIMER, .overlay_setpoint = 2500};
     char out[128];
-    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":25.00,\"boost\":true}") == 0);
+    /* Boost is the gateway's word, not the 6240=3 a device may report. */
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){.boost = true}) &&
+          strcmp(out, "{\"setpoint\":25.00,\"boost\":true}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){0}) && strcmp(out, "{\"setpoint\":25.00}") == 0);
     z.overlay = TADO_OVERLAY_MANUAL;
-    CHECK(ha_zone_state(out, sizeof out, &z, NULL) && strcmp(out, "{\"setpoint\":25.00}") == 0);
+    CHECK(ha_zone_state(out, sizeof out, &z, &(struct ha_target){0}) && strcmp(out, "{\"setpoint\":25.00}") == 0);
 
     /* The gateway's target next to what the device reported: not confirmed
      * until they agree; a room off in away has no target. */

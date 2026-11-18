@@ -345,6 +345,17 @@ static bool overlay_over(const struct session_zone *z, uint32_t now)
 
 static bool overlay_running(const struct session_zone *z, uint32_t now) { return z->overlay && !overlay_over(z, now); }
 
+static void start_overlay(struct session_zone *z, uint8_t kind, bool ours, uint16_t setpoint, uint32_t now,
+                          uint32_t for_ms)
+{
+    z->overlay = true;
+    z->overlay_kind = kind;
+    z->overlay_ours = ours;
+    z->overlay_setpoint = setpoint;
+    z->overlay_start_ms = now;
+    z->overlay_for_ms = for_ms;
+}
+
 /* The zone's state: its program, and the overlay it runs. */
 static struct tado_zone_block block_of(struct session *s, const struct session_zone *z, uint32_t now)
 {
@@ -411,12 +422,9 @@ static void on_device_overlay(struct session *s, const uint8_t device[8], const 
         say(s, "zone %u: the device ended its overlay", zone);
     } else if (r.fields & TADO_OVERLAY_SETPOINT) {
         uint32_t c = r.overlay_setpoint;
-        z->overlay = true;
         /* As the device reports it (a manual change is 2); its end is ours. */
-        z->overlay_kind = (r.fields & TADO_OVERLAY) && r.overlay >= 1 && r.overlay <= 3 ? r.overlay : TADO_OVERLAY_MANUAL;
-        z->overlay_setpoint = (uint16_t)c;
-        z->overlay_start_ms = now;
-        z->overlay_for_ms = s->overlay_ms;
+        start_overlay(z, (r.fields & TADO_OVERLAY) && r.overlay >= 1 && r.overlay <= 3 ? r.overlay : TADO_OVERLAY_MANUAL,
+                      false, (uint16_t)c, now, s->overlay_ms);
         if (z->overlay_for_ms)
             say(s, "zone %u: %lu.%02lu C set on the device, for %lu min", zone, (unsigned long)c / 100,
                 (unsigned long)c % 100, (unsigned long)s->overlay_ms / 60000u);
@@ -497,22 +505,17 @@ bool session_boost(struct session *s, uint8_t zone, uint16_t setpoint, uint32_t 
     struct session_zone *z = zone_find(s, zone);
     if (!z)
         return false;
-    z->overlay = true;
-    z->overlay_kind = TADO_OVERLAY_TIMER;
-    z->overlay_setpoint = setpoint;
-    z->overlay_start_ms = now;
-    z->overlay_for_ms = for_ms;
+    start_overlay(z, TADO_OVERLAY_TIMER, true, setpoint, now, for_ms);
     write_zone(s, z, now, "boost", false, true);
     return true;
 }
 
-bool session_end_overlay(struct session *s, uint8_t zone, uint32_t now)
+uint32_t session_boost_left_ms(struct session *s, uint8_t zone, uint32_t now)
 {
-    struct session_zone *z = zone_find(s, zone);
-    if (!z || !overlay_running(z, now))
-        return false;
-    write_zone(s, z, now, "overlay cancelled", true, true);
-    return true;
+    const struct session_zone *z = zone_find(s, zone);
+    if (!z || !z->overlay_ours || !overlay_running(z, now))
+        return 0;
+    return z->overlay_for_ms - (now - z->overlay_start_ms);
 }
 
 /* Ends each overlay whose time is up and tells its device, which would else

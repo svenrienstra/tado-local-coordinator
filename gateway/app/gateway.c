@@ -272,7 +272,13 @@ static void publish_device(struct gateway *g, struct gateway_device *dev)
         publish(g);
 }
 
-static struct session_program program_of(const struct gateway *g, const struct gateway_room *r);
+/* What the room follows: the session serves and writes what this says. */
+static struct session_program program_of(const struct gateway *g, const struct gateway_room *r)
+{
+    if (!g->away)
+        return (struct session_program){.on = true, .setpoint = r->setpoint};
+    return (struct session_program){.away = true, .on = r->away_setpoint != 0, .setpoint = r->away_setpoint};
+}
 
 /* What the room heats to now, by the gateway's word, and whether its device
  * confirmed it: no write is waiting for its ACK and it reported that setpoint
@@ -300,10 +306,11 @@ static struct ha_target target_of(struct gateway *g, struct gateway_room *r)
         r->unconfirmed_ms = now(g);
     }
     t.stale = r->unconfirmed && g->stale_minutes && now(g) - r->unconfirmed_ms >= g->stale_minutes * 60000u;
+    t.boost = session_boost_left_ms(&g->session, r->zone, now(g)) > 0;
     return t;
 }
 
-static void publish_room(struct gateway *g, struct gateway_room *room, const struct ha_target *target)
+static void publish_room(struct gateway *g, struct gateway_room *room)
 {
     uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
     for (int e = HA_ZONE_FIRST; e <= HA_ZONE_LAST; e++)
@@ -311,7 +318,6 @@ static void publish_room(struct gateway *g, struct gateway_room *room, const str
                                                    room->zone, room->name, e))
             publish(g);
     room->discovered |= fresh;
-    room->target = *target;
     if (ha_zone_state_topic(g->topic, sizeof g->topic, room->zone) &&
         ha_zone_state(g->payload, sizeof g->payload, &room->r, &room->target))
         publish(g);
@@ -348,7 +354,8 @@ static void publish_dirty(struct gateway *g)
         struct ha_target t = target_of(g, r);
         if (r->dirty || memcmp(&t, &r->target, sizeof t) != 0) {
             r->dirty = false;
-            publish_room(g, r, &t);
+            r->target = t;
+            publish_room(g, r);
         }
     }
 }
@@ -458,14 +465,6 @@ static uint32_t session_unix(void *ctx)
 {
     struct gateway *g = ctx;
     return g->ops.unix_time(g->ops.ctx);
-}
-
-/* What the room follows: the session serves and writes what this says. */
-static struct session_program program_of(const struct gateway *g, const struct gateway_room *r)
-{
-    if (!g->away)
-        return (struct session_program){.on = true, .setpoint = r->setpoint};
-    return (struct session_program){.away = true, .on = r->away_setpoint != 0, .setpoint = r->away_setpoint};
 }
 
 static void session_program(void *ctx, uint8_t zone, struct session_program *out)
@@ -676,20 +675,17 @@ void gateway_set_away(struct gateway *g, bool away)
 {
     if (g->away == away)
         return;
-    struct session_program before[INSTALL_MAX_ROOMS];
-    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++)
-        before[i] = program_of(g, &g->rooms[i]);
     g->away = away;
     save_soon(g);
     notice(g, "the home is %s", away ? "away" : "home");
     publish_home(g);
+    /* Every room, as the bridge writes them all at the switch; its target
+     * moved unless its away temperature is its setpoint (a setpoint is never
+     * 0, so off in away always moves it). */
     for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
         const struct gateway_room *r = &g->rooms[i];
-        if (!r->used)
-            continue;
-        struct session_program after = program_of(g, r);
-        bool changed = after.on != before[i].on || (after.on && after.setpoint != before[i].setpoint);
-        session_restate_zone(&g->session, r->zone, changed, now(g));
+        if (r->used)
+            session_restate_zone(&g->session, r->zone, r->away_setpoint != r->setpoint, now(g));
     }
 }
 
@@ -712,13 +708,17 @@ bool gateway_boost(struct gateway *g, uint8_t zone, bool on)
     struct gateway_room *r = gateway_room(g, zone);
     if (!r)
         return false;
-    bool done = on ? session_boost(&g->session, zone, GATEWAY_BOOST_SETPOINT, GATEWAY_BOOST_MS, now(g))
-                   : gateway_boost_left(g, zone) && session_end_overlay(&g->session, zone, now(g));
-    if (done && on)
+    if (on) {
+        if (!session_boost(&g->session, zone, GATEWAY_BOOST_SETPOINT, GATEWAY_BOOST_MS, now(g)))
+            return false;
         notice(g, "room %s: boost to %u C for %u min", r->name, GATEWAY_BOOST_SETPOINT / 100u, GATEWAY_BOOST_MS / 60000u);
-    else if (done)
+    } else {
+        /* Ending it is writing the room's own state, which ends an overlay. */
+        if (!gateway_boost_left(g, zone) || !session_write_zone(&g->session, zone, now(g)))
+            return false;
         notice(g, "room %s: boost ended", r->name);
-    return done;
+    }
+    return true;
 }
 
 bool gateway_set_stale_minutes(struct gateway *g, uint16_t minutes)
@@ -734,11 +734,7 @@ bool gateway_set_stale_minutes(struct gateway *g, uint16_t minutes)
 
 uint32_t gateway_boost_left(struct gateway *g, uint8_t zone)
 {
-    const struct session_zone *z = session_zone(&g->session, zone);
-    if (!z || !z->overlay || z->overlay_kind != TADO_OVERLAY_TIMER)
-        return 0;
-    uint32_t ran = now(g) - z->overlay_start_ms;
-    return ran < z->overlay_for_ms ? (z->overlay_for_ms - ran + 999) / 1000 : 0;
+    return (session_boost_left_ms(&g->session, zone, now(g)) + 999) / 1000;
 }
 
 bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone)
@@ -863,6 +859,11 @@ void gateway_run(struct gateway *g, uint32_t timeout_ms)
         save_install(g);
 }
 
+static bool payload_is(const char *payload, size_t len, const char *text)
+{
+    return len == strlen(text) && memcmp(payload, text, len) == 0;
+}
+
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len, bool retained)
 {
     /* A retained message is an old command again on every reconnect, and an
@@ -873,32 +874,31 @@ void gateway_command(struct gateway *g, const char *topic, const char *payload, 
         gateway_pair(g, GATEWAY_PAIR_WINDOW_S);
         return;
     }
-    bool is_home = len == strlen(HA_HOME) && memcmp(payload, HA_HOME, len) == 0;
-    bool is_away = len == strlen(HA_AWAY) && memcmp(payload, HA_AWAY, len) == 0;
+    bool ok = true;
+    unsigned zone = 0;
     if (strcmp(topic, HA_HOME_SET_TOPIC) == 0) {
-        if (is_home || is_away)
-            gateway_set_away(g, is_away);
-        else
-            notice(g, "home state refused: %.*s", (int)(len < 16 ? len : 16), payload);
-        return;
+        bool away = payload_is(payload, len, HA_AWAY);
+        ok = away || payload_is(payload, len, HA_HOME);
+        if (ok)
+            gateway_set_away(g, away);
+    } else {
+        switch (ha_zone_command(topic, &zone)) {
+        case HA_ZONE_SETPOINT_SET: {
+            int32_t c = ha_parse_centi(payload, len);
+            ok = c >= 0 && gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c);
+            break;
+        }
+        case HA_ZONE_PRESET_SET: {
+            bool boost = payload_is(payload, len, "boost");
+            ok = (boost || payload_is(payload, len, "none")) && gateway_boost(g, (uint8_t)zone, boost);
+            break;
+        }
+        case HA_ZONE_NO_COMMAND:
+            break;
+        }
     }
-    unsigned zone;
-    switch (ha_zone_command(topic, &zone)) {
-    case HA_ZONE_SETPOINT_SET: {
-        int32_t c = ha_parse_centi(payload, len);
-        if (c < 0 || !gateway_set_setpoint(g, (uint8_t)zone, (uint16_t)c))
-            notice(g, "setpoint for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);
-        break;
-    }
-    case HA_ZONE_PRESET_SET: {
-        bool boost = len == 5 && memcmp(payload, "boost", 5) == 0, none = len == 4 && memcmp(payload, "none", 4) == 0;
-        if (!(boost || none) || !gateway_boost(g, (uint8_t)zone, boost))
-            notice(g, "preset for zone %u refused: %.*s", zone, (int)(len < 16 ? len : 16), payload);
-        break;
-    }
-    case HA_ZONE_NO_COMMAND:
-        break;
-    }
+    if (!ok)
+        notice(g, "%s refused: %.*s", topic, (int)(len < 16 ? len : 16), payload);
 }
 
 void gateway_announce(struct gateway *g)
