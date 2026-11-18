@@ -142,12 +142,12 @@ static void on_cc1312_log(struct gateway *g, const struct gwlink_event *e)
     }
 }
 
-/* --- devices and zones ------------------------------------------------------ */
+/* --- devices and rooms ------------------------------------------------------ */
 
 static int device_slot(struct gateway *g, const uint8_t eui[8], bool create)
 {
     int free_slot = -1;
-    for (int i = 0; i < GATEWAY_MAX_DEVICES; i++) {
+    for (int i = 0; i < INSTALL_MAX_DEVICES; i++) {
         if (g->devices[i].used && memcmp(g->devices[i].eui, eui, 8) == 0)
             return i;
         if (!g->devices[i].used && free_slot < 0)
@@ -161,77 +161,176 @@ static int device_slot(struct gateway *g, const uint8_t eui[8], bool create)
     return free_slot;
 }
 
+struct gateway_device *gateway_device(struct gateway *g, const uint8_t eui[8])
+{
+    int i = device_slot(g, eui, false);
+    return i < 0 ? NULL : &g->devices[i];
+}
+
+struct gateway_room *gateway_room(struct gateway *g, uint8_t zone)
+{
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++)
+        if (g->rooms[i].used && g->rooms[i].zone == zone && zone != 0)
+            return &g->rooms[i];
+    return NULL;
+}
+
+/* The device in the room, or NULL. */
+static struct gateway_device *owner_of(struct gateway *g, uint8_t zone)
+{
+    for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++)
+        if (g->devices[i].used && g->devices[i].zone == zone)
+            return &g->devices[i];
+    return NULL;
+}
+
+static void save_install(struct gateway *g)
+{
+    static struct install in; /* one task; keeps it off the stack */
+    uint8_t blob[INSTALL_MAX_BLOB];
+    memset(&in, 0, sizeof in);
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
+        const struct gateway_room *r = &g->rooms[i];
+        if (!r->used)
+            continue;
+        struct install_room *o = &in.rooms[in.n_rooms++];
+        o->zone = r->zone;
+        o->setpoint = r->setpoint;
+        memcpy(o->name, r->name, sizeof o->name);
+    }
+    for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++) {
+        const struct gateway_device *d = &g->devices[i];
+        if (!d->used)
+            continue;
+        struct install_device *o = &in.devices[in.n_devices++];
+        memcpy(o->eui, d->eui, 8);
+        o->zone = d->zone;
+        memcpy(o->serial, d->d.serial, sizeof o->serial);
+    }
+    size_t n = install_encode(&in, blob, sizeof blob);
+    if (n)
+        g->ops.save_install(g->ops.ctx, blob, n);
+}
+
+/* Serves each room that has a device as a zone with that device as owner, and
+ * no other zone. A room whose device changed starts its measure afresh. */
+static void sync_session(struct gateway *g)
+{
+    for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
+        const struct session_zone *z = &g->session.zones[i];
+        if (z->used && !gateway_room(g, z->zone))
+            session_drop_zone(&g->session, z->zone);
+    }
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
+        struct gateway_room *r = &g->rooms[i];
+        if (!r->used)
+            continue;
+        const struct gateway_device *owner = owner_of(g, r->zone);
+        const struct session_zone *z = NULL;
+        for (size_t k = 0; k < SESSION_MAX_ZONES; k++)
+            if (g->session.zones[k].used && g->session.zones[k].zone == r->zone)
+                z = &g->session.zones[k];
+        if (!owner) {
+            if (z)
+                session_drop_zone(&g->session, r->zone);
+        } else if (!z || memcmp(z->owner, owner->eui, 8) != 0) {
+            session_set_zone(&g->session, r->zone, owner->eui, r->setpoint);
+            memset(&r->r, 0, sizeof r->r);
+        }
+    }
+}
+
 static void publish(struct gateway *g) { g->ops.publish(g->ops.ctx, g->topic, g->payload, true); }
 
 /* Discovery for the entities that got a value since the last time, then the
  * retained state. Nothing before the device's serial is known. */
-static void publish_device(struct gateway *g, int i)
+static void publish_device(struct gateway *g, struct gateway_device *dev)
 {
-    const struct ha_device *d = &g->devices[i].d;
+    const struct ha_device *d = &dev->d;
     if (!d->serial[0])
         return;
-    uint32_t fresh = ha_device_entities(d) & ~g->devices[i].discovered;
+    uint32_t fresh = ha_device_entities(d) & ~dev->discovered;
     for (int e = 0; e <= HA_LAST_SEEN; e++)
         if ((fresh & 1u << e) &&
             ha_device_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload, d->serial, e))
             publish(g);
-    g->devices[i].discovered |= fresh;
+    dev->discovered |= fresh;
     if (ha_device_state_topic(g->topic, sizeof g->topic, d->serial) &&
         ha_device_state(g->payload, sizeof g->payload, d))
         publish(g);
 }
 
-static void publish_zone(struct gateway *g, size_t i)
+static void publish_room(struct gateway *g, struct gateway_room *room)
 {
-    const struct tado_report *z = &g->zones[i].r;
-    uint8_t zone = g->zones[i].zone;
-    uint32_t fresh = ha_zone_entities(z) & ~g->zones[i].discovered;
+    uint32_t fresh = ha_zone_entities(&room->r) & ~room->discovered;
     for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_DEMAND; e++)
-        if ((fresh & 1u << e) && ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload, zone, e))
+        if ((fresh & 1u << e) && ha_zone_discovery(g->topic, sizeof g->topic, g->payload, sizeof g->payload,
+                                                   room->zone, room->name, e))
             publish(g);
-    g->zones[i].discovered |= fresh;
-    if (z->fields && ha_zone_state_topic(g->topic, sizeof g->topic, zone) &&
-        ha_zone_state(g->payload, sizeof g->payload, z))
+    room->discovered |= fresh;
+    if (room->r.fields && ha_zone_state_topic(g->topic, sizeof g->topic, room->zone) &&
+        ha_zone_state(g->payload, sizeof g->payload, &room->r))
         publish(g);
+}
+
+/* Takes the room's entities out of Home Assistant: an empty retained config. */
+static void unpublish_room(struct gateway *g, struct gateway_room *room)
+{
+    for (int e = HA_ZONE_TEMPERATURE; e <= HA_ZONE_DEMAND; e++)
+        if ((room->discovered & 1u << e) && ha_zone_discovery(g->topic, sizeof g->topic, g->payload,
+                                                              sizeof g->payload, room->zone, room->name, e)) {
+            g->payload[0] = '\0';
+            publish(g);
+        }
+    room->discovered = 0;
 }
 
 static void publish_dirty(struct gateway *g)
 {
-    for (int i = 0; i < GATEWAY_MAX_DEVICES; i++)
+    for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++)
         if (g->devices[i].used && g->devices[i].dirty) {
             g->devices[i].dirty = false;
-            publish_device(g, i);
+            publish_device(g, &g->devices[i]);
         }
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++)
-        if (g->zones[i].used && g->zones[i].dirty) {
-            g->zones[i].dirty = false;
-            publish_zone(g, i);
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++)
+        if (g->rooms[i].used && g->rooms[i].dirty) {
+            g->rooms[i].dirty = false;
+            publish_room(g, &g->rooms[i]);
         }
 }
 
-/* The Home Assistant side of the session's zone i, started afresh when the
- * slot now holds another zone. */
-static void reset_zone(struct gateway *g, size_t i)
+static void seen(struct gateway *g, struct gateway_device *d)
 {
-    memset(&g->zones[i], 0, sizeof g->zones[i]);
-    g->zones[i].used = true;
-    g->zones[i].zone = g->session.zones[i].zone;
+    /* Called while the session handles g->ev, the frame that carried it. */
+    d->d.has_rssi = true;
+    d->d.rssi = g->ev.ev.rx.rssi;
+    d->d.last_seen = g->ops.unix_time(g->ops.ctx);
 }
 
-static void seen(struct gateway *g, int i, int8_t rssi, uint32_t unix)
-{
-    g->devices[i].d.has_rssi = true;
-    g->devices[i].d.rssi = rssi;
-    g->devices[i].d.last_seen = unix;
-}
-
-/* Signal and time of a frame under our key. A device gets a slot with its
- * first report, so strangers and joiners that never made it take none. */
+/* Signal and time of a frame under our key, for the devices we know. */
 static void on_rx(struct gateway *g, const struct link_event *ev)
 {
-    int i = ev->rx.pairing_key ? -1 : device_slot(g, ev->rx.src, false);
+    struct gateway_device *d = ev->rx.pairing_key ? NULL : gateway_device(g, ev->rx.src);
+    if (d)
+        seen(g, d);
+}
+
+/* A device that talks to us under our key holds it: it is ours, whether it
+ * joined in this run or before. NULL when the table is full. */
+static struct gateway_device *known(struct gateway *g, const uint8_t eui[8])
+{
+    int i = device_slot(g, eui, false);
     if (i >= 0)
-        seen(g, i, ev->rx.rssi, g->ops.unix_time(g->ops.ctx));
+        return &g->devices[i];
+    char e[17];
+    i = device_slot(g, eui, true);
+    if (i < 0) {
+        notice(g, "device table full: %s not kept", eui_str(eui, e));
+        return NULL;
+    }
+    seen(g, &g->devices[i]);
+    save_install(g);
+    return &g->devices[i];
 }
 
 /* --- the session's callbacks ------------------------------------------------ */
@@ -297,81 +396,54 @@ static bool serial_of(const char *path, char *out, size_t cap)
     return true;
 }
 
-static void session_report(void *ctx, const uint8_t device[8], const char *path, const struct tado_report *r)
+/* Learns the device's serial from its requests, and whether it waits for a
+ * room: its config request goes unanswered until it has one. */
+static void session_request(void *ctx, const uint8_t device[8], uint8_t code, const char *path, bool answered)
 {
     struct gateway *g = ctx;
-    int i = device_slot(g, device, true);
-    if (i < 0) {
-        char e[17];
-        notice(g, "device table full: %s not published", eui_str(device, e));
+    struct gateway_device *d = known(g, device);
+    if (!d)
         return;
+    if (!d->d.serial[0] && serial_of(path, d->d.serial, sizeof d->d.serial)) {
+        d->dirty = true;
+        save_install(g);
     }
-    /* Called while the session handles g->ev, the frame that carried it. */
-    seen(g, i, g->ev.ev.rx.rssi, g->ops.unix_time(g->ops.ctx));
-    struct ha_device *d = &g->devices[i].d;
-    if (!d->serial[0])
-        serial_of(path, d->serial, sizeof d->serial);
-    ha_merge(&d->r, r);
-    g->devices[i].dirty = true;
-    /* An owner's reports are its zone's: measure, demand, setpoint echo. */
-    for (size_t z = 0; z < SESSION_MAX_ZONES; z++) {
-        const struct session_zone *sz = &g->session.zones[z];
-        if (!sz->used || memcmp(sz->owner, device, 8) != 0)
-            continue;
-        if (!g->zones[z].used || g->zones[z].zone != sz->zone)
-            reset_zone(g, z);
-        struct tado_report before = g->zones[z].r;
-        ha_merge(&g->zones[z].r, r);
-        g->zones[z].dirty |= memcmp(&before, &g->zones[z].r, sizeof before) != 0;
+    const char *leaf = strrchr(path, '/');
+    if (code == COAP_GET && strncmp(path, "d/", 2) == 0 && leaf && strcmp(leaf, "/config") == 0) {
+        if (!answered && !d->waiting)
+            notice(g, "%s %s waits for a room: put it in one on the setup page", d->d.serial,
+                   eui_str(device, (char[17]){0}));
+        d->waiting = !answered;
     }
 }
 
-/* The session's zones, to flash. */
-static void save_zones(struct gateway *g)
+static void session_report(void *ctx, const uint8_t device[8], const char *path, const struct tado_report *r)
 {
-    struct gateway_zone zones[SESSION_MAX_ZONES];
-    size_t n = 0;
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
-        const struct session_zone *z = &g->session.zones[i];
-        if (!z->used)
-            continue;
-        zones[n] = (struct gateway_zone){.zone = z->zone, .setpoint = z->setpoint};
-        memcpy(zones[n++].owner, z->owner, 8);
+    (void)path;
+    struct gateway *g = ctx;
+    struct gateway_device *d = known(g, device);
+    if (!d)
+        return;
+    seen(g, d);
+    ha_merge(&d->d.r, r);
+    d->dirty = true;
+    /* The owner's reports are its room's: measure, demand, setpoint echo. */
+    struct gateway_room *room = gateway_room(g, d->zone);
+    if (room) {
+        struct tado_report before = room->r;
+        ha_merge(&room->r, r);
+        room->dirty |= memcmp(&before, &room->r, sizeof before) != 0;
     }
-    g->ops.save_zones(g->ops.ctx, zones, n);
 }
 
-/* The device that joined our window owns the zone the pair command named. */
 static void session_joined(void *ctx, const uint8_t device[8])
 {
     struct gateway *g = ctx;
     char e[17];
-    if (!g->pairing)
+    memcpy(g->pair_joined, device, 8);
+    if (!known(g, device))
         return;
-    uint16_t setpoint = SESSION_DEFAULT_SETPOINT;
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
-        const struct session_zone *z = &g->session.zones[i];
-        if (!z->used)
-            continue;
-        if (z->zone == g->pair_zone) {
-            setpoint = z->setpoint;
-        } else if (memcmp(z->owner, device, 8) == 0) {
-            /* A device owns one zone: paired again, it leaves the one it had. */
-            notice(g, "%s leaves zone %u", eui_str(device, e), z->zone);
-            session_drop_zone(&g->session, z->zone);
-            g->zones[i].used = false;
-        }
-    }
-    if (!session_set_zone(&g->session, g->pair_zone, device, setpoint)) {
-        notice(g, "%s joined, but the zone table is full", eui_str(device, e));
-        save_zones(g);
-        return;
-    }
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++)
-        if (g->session.zones[i].used && g->session.zones[i].zone == g->pair_zone)
-            reset_zone(g, i); /* a new owner's measure */
-    save_zones(g);
-    notice(g, "%s joined: owner of zone %u", eui_str(device, e), g->pair_zone);
+    notice(g, "%s joined: put it in a room on the setup page", eui_str(device, e));
 }
 
 /* --- setup ------------------------------------------------------------------ */
@@ -406,32 +478,123 @@ void gateway_init(struct gateway *g, const struct gateway_identity *id, const st
                             .rng = session_rng,
                             .unix_time = session_unix,
                             .on_report = session_report,
+                            .on_request = session_request,
                             .on_joined = session_joined};
     session_init(&g->session, id->coordinator, id->network_key, &s, now(g));
     session_set_home(&g->session, id->home_id, SESSION_DEFAULT_OVERLAY_MS);
-    for (size_t i = 0; i < id->n_zones; i++)
-        session_set_zone(&g->session, id->zones[i].zone, id->zones[i].owner, id->zones[i].setpoint);
+    const struct install *in = &id->install;
+    for (size_t i = 0; i < in->n_rooms && i < INSTALL_MAX_ROOMS; i++) {
+        struct gateway_room *r = &g->rooms[i];
+        r->used = true;
+        r->zone = in->rooms[i].zone;
+        r->setpoint = in->rooms[i].setpoint;
+        memcpy(r->name, in->rooms[i].name, sizeof r->name);
+    }
+    for (size_t i = 0; i < in->n_devices && i < INSTALL_MAX_DEVICES; i++) {
+        struct gateway_device *d = &g->devices[i];
+        d->used = true;
+        memcpy(d->eui, in->devices[i].eui, 8);
+        d->zone = gateway_room(g, in->devices[i].zone) ? in->devices[i].zone : 0;
+        memcpy(d->d.serial, in->devices[i].serial, sizeof d->d.serial);
+    }
+    sync_session(g);
+}
+
+/* --- rooms ------------------------------------------------------------------ */
+
+uint8_t gateway_add_room(struct gateway *g, const char *name)
+{
+    if (!install_name_ok(name, strlen(name)))
+        return 0;
+    struct gateway_room *slot = NULL;
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS && !slot; i++)
+        if (!g->rooms[i].used)
+            slot = &g->rooms[i];
+    if (!slot)
+        return 0;
+    unsigned zone = 1;
+    while (gateway_room(g, (uint8_t)zone))
+        zone++;
+    memset(slot, 0, sizeof *slot);
+    slot->used = true;
+    slot->zone = (uint8_t)zone;
+    slot->setpoint = SESSION_DEFAULT_SETPOINT;
+    strcpy(slot->name, name);
+    save_install(g);
+    notice(g, "room %s added as zone %u", name, zone);
+    return (uint8_t)zone;
+}
+
+bool gateway_rename_room(struct gateway *g, uint8_t zone, const char *name)
+{
+    struct gateway_room *r = gateway_room(g, zone);
+    if (!r || !install_name_ok(name, strlen(name)))
+        return false;
+    strcpy(r->name, name);
+    r->discovered = 0; /* discovery again, under the new name */
+    r->dirty = true;
+    save_install(g);
+    return true;
+}
+
+bool gateway_delete_room(struct gateway *g, uint8_t zone)
+{
+    struct gateway_room *r = gateway_room(g, zone);
+    if (!r)
+        return false;
+    for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++)
+        if (g->devices[i].used && g->devices[i].zone == zone)
+            g->devices[i].zone = 0;
+    unpublish_room(g, r);
+    notice(g, "room %s (zone %u) deleted", r->name, zone);
+    r->used = false;
+    sync_session(g);
+    save_install(g);
+    return true;
+}
+
+bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone)
+{
+    struct gateway_device *d = gateway_device(g, eui);
+    if (!d || (zone != 0 && !gateway_room(g, zone)))
+        return false;
+    struct gateway_device *other = zone ? owner_of(g, zone) : NULL;
+    if (other && other != d)
+        return false;
+    if (d->zone == zone)
+        return true;
+    d->zone = zone;
+    sync_session(g);
+    save_install(g);
+    char e[17];
+    if (zone)
+        notice(g, "%s %s put in room %s: it takes it at its next config read", d->d.serial, eui_str(eui, e),
+               gateway_room(g, zone)->name);
+    else
+        notice(g, "%s %s taken out of its room", d->d.serial, eui_str(eui, e));
+    return true;
 }
 
 /* --- pairing ---------------------------------------------------------------- */
 
-static void close_pair_window(struct gateway *g, bool keep_session_state)
+static void close_pair_window(struct gateway *g, enum gateway_pair_state end)
 {
     g->pairing = false;
+    g->pair = end;
     if (g->configured && gwlink_pair_window(&g->link, 0) != HL_OK)
         notice(g, "could not close the pair window; the CC1312 closes it at its deadline");
-    if (!keep_session_state)
+    if (end != GATEWAY_PAIR_JOINED)
         session_close_pair_window(&g->session);
 }
 
-bool gateway_pair(struct gateway *g, uint8_t zone, uint16_t seconds)
+bool gateway_pair(struct gateway *g, uint16_t seconds)
 {
     if (!g->configured || seconds == 0) {
-        notice(g, "pair window for zone %u not opened: the cc1312 is not configured", zone);
+        notice(g, "pair window not opened: the cc1312 is not configured");
         return false;
     }
     if (session_pair_state(&g->session) == SESSION_PAIR_PAIRING) {
-        notice(g, "pair window for zone %u not opened: a device is joining zone %u", zone, g->pair_zone);
+        notice(g, "pair window not opened: a device is joining");
         return false;
     }
     int status = gwlink_pair_window(&g->link, seconds);
@@ -441,10 +604,22 @@ bool gateway_pair(struct gateway *g, uint8_t zone, uint16_t seconds)
     }
     session_open_pair_window(&g->session);
     g->pairing = true;
-    g->pair_zone = zone;
+    g->pair = GATEWAY_PAIR_OPEN;
     g->pair_until_ms = now(g) + seconds * 1000u;
-    notice(g, "pair window open for %u s for zone %u: long-press the device's button", seconds, zone);
+    notice(g, "pair window open for %u s: long-press the device's button", seconds);
     return true;
+}
+
+void gateway_close_pair(struct gateway *g)
+{
+    if (g->pairing && session_pair_state(&g->session) != SESSION_PAIR_PAIRING)
+        close_pair_window(g, GATEWAY_PAIR_CLOSED);
+}
+
+uint32_t gateway_pair_left(struct gateway *g)
+{
+    int32_t left = (int32_t)(g->pair_until_ms - now(g));
+    return g->pairing && left > 0 ? ((uint32_t)left + 999) / 1000 : 0;
 }
 
 static void watch_pairing(struct gateway *g)
@@ -454,18 +629,19 @@ static void watch_pairing(struct gateway *g)
     switch (session_pair_state(&g->session)) {
     case SESSION_PAIR_JOINED:
         /* The joiner talks our key now: stop answering under the shared one. */
-        close_pair_window(g, true);
+        close_pair_window(g, GATEWAY_PAIR_JOINED);
         break;
     case SESSION_PAIR_FAILED:
-        notice(g, "pairing for zone %u failed", g->pair_zone);
-        close_pair_window(g, false);
+        notice(g, "pairing failed");
+        close_pair_window(g, GATEWAY_PAIR_FAILED);
         break;
     case SESSION_PAIR_PAIRING:
-        break; /* d/pair is out: it ends in JOINED or FAILED, past the window too */
+        g->pair = GATEWAY_PAIR_JOINING; /* it ends in JOINED or FAILED, past the window too */
+        break;
     default:
         if ((int32_t)(now(g) - g->pair_until_ms) >= 0) {
-            notice(g, "pair window for zone %u closed: no device joined", g->pair_zone);
-            close_pair_window(g, false);
+            notice(g, "pair window closed: no device joined");
+            close_pair_window(g, GATEWAY_PAIR_CLOSED);
         }
     }
 }
@@ -492,37 +668,21 @@ void gateway_run(struct gateway *g, uint32_t timeout_ms)
 
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len)
 {
-    if (strcmp(topic, HA_PAIR_TOPIC) != 0)
-        return;
-    char buf[8];
-    while (len && (*payload == ' ' || *payload == '\n'))
-        payload++, len--;
-    while (len && (payload[len - 1] == ' ' || payload[len - 1] == '\n' || payload[len - 1] == '\r'))
-        len--;
-    unsigned long zone = 0;
-    char *end = NULL;
-    if (len > 0 && len < sizeof buf) {
-        memcpy(buf, payload, len);
-        buf[len] = '\0';
-        zone = strtoul(buf, &end, 10);
-    }
-    if (!end || *end != '\0' || zone < 1 || zone > 255) {
-        notice(g, "pair command: expected a zone number 1-255");
-        return;
-    }
-    gateway_pair(g, (uint8_t)zone, GATEWAY_PAIR_WINDOW_S);
+    (void)payload, (void)len;
+    if (strcmp(topic, HA_PAIR_TOPIC) == 0)
+        gateway_pair(g, GATEWAY_PAIR_WINDOW_S);
 }
 
 void gateway_announce(struct gateway *g)
 {
     g->ops.publish(g->ops.ctx, HA_STATUS_TOPIC, HA_ONLINE, true);
-    for (int i = 0; i < GATEWAY_MAX_DEVICES; i++) {
+    for (size_t i = 0; i < INSTALL_MAX_DEVICES; i++) {
         g->devices[i].discovered = 0;
         g->devices[i].dirty = true;
     }
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++) {
-        g->zones[i].discovered = 0;
-        g->zones[i].dirty = true;
+    for (size_t i = 0; i < INSTALL_MAX_ROOMS; i++) {
+        g->rooms[i].discovered = 0;
+        g->rooms[i].dirty = true;
     }
     publish_dirty(g);
 }

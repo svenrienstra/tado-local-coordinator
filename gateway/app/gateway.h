@@ -7,6 +7,7 @@
 
 #include "gwlink.h"
 #include "ha.h"
+#include "install.h"
 #include "session.h"
 
 /* The gateway application around the session (docs/PLAN.md 4.2), still
@@ -15,9 +16,10 @@
  *
  * It configures the CC1312 and configures it again whenever it rebooted (it
  * keeps nothing across a reset), keeps the frame counter ahead in reserved
- * blocks, keeps the carrier the CC1312 tunes to, opens a pair window for a
- * zone on command and makes the device that joins the zone's owner, and
- * publishes what the devices report for Home Assistant.
+ * blocks, and keeps the carrier the CC1312 tunes to. It keeps the rooms and
+ * the joined devices: a device is paired first and then put in a room, as in
+ * the tado app (docs/PLAN.md 3.9), and the room's zone is served from then on.
+ * It publishes what the devices report for Home Assistant.
  *
  * Not thread-safe: one task calls everything. */
 
@@ -28,27 +30,18 @@
  * TUNE_MAX_HZ), as the Java host keeps it. */
 #define GATEWAY_CHANNEL_KHZ     868335u
 #define GATEWAY_TUNE_MAX_KHZ    40u
-#define GATEWAY_MAX_DEVICES     16
 #define GATEWAY_PAIR_WINDOW_S   120u
 /* Counters the CC1312 may use on its own (beacon answers) between two TXs. */
 #define GATEWAY_COUNTER_MARGIN  256u
 
-struct gateway_zone {
-    uint8_t zone;
-    uint8_t owner[8];
-    uint16_t setpoint; /* centi-degrees C */
-};
-
-/* What the gateway keeps in flash, loaded at boot. From then on the session
- * holds the zones; save_zones gets them whenever they change. */
+/* What the gateway keeps in flash, loaded at boot. */
 struct gateway_identity {
     uint8_t coordinator[8];
     uint8_t network_key[16];
     uint32_t counter_floor;  /* the next unreserved frame counter */
     uint32_t channel_khz;
     uint32_t home_id;
-    size_t n_zones;
-    struct gateway_zone zones[SESSION_MAX_ZONES];
+    struct install install;  /* rooms and devices; save_install keeps it */
 };
 
 struct gateway_ops {
@@ -63,7 +56,17 @@ struct gateway_ops {
     /* Persist; false when the write failed. */
     bool (*save_counter_floor)(void *ctx, uint32_t floor);
     void (*save_channel)(void *ctx, uint32_t khz);
-    void (*save_zones)(void *ctx, const struct gateway_zone *zones, size_t n);
+    /* The installation, encoded (install.h), whenever it changed. */
+    void (*save_install)(void *ctx, const uint8_t *blob, size_t len);
+};
+
+enum gateway_pair_state {
+    GATEWAY_PAIR_IDLE,
+    GATEWAY_PAIR_OPEN,     /* the window runs: long-press the device */
+    GATEWAY_PAIR_JOINING,  /* d/pair is out */
+    GATEWAY_PAIR_JOINED,   /* the last window ended with pair_joined joining */
+    GATEWAY_PAIR_FAILED,
+    GATEWAY_PAIR_CLOSED,   /* the last window ended with no device */
 };
 
 struct gateway {
@@ -80,23 +83,29 @@ struct gateway {
     struct gwlink_event ev;   /* the event being handled */
 
     bool pairing;             /* a pair window the gateway opened is running */
-    uint8_t pair_zone;
+    enum gateway_pair_state pair;
     uint32_t pair_until_ms;
+    uint8_t pair_joined[8];
 
-    /* What goes to Home Assistant: published at the end of gateway_run when
-     * dirty, so a device's answer never waits for MQTT. */
-    struct {
+    /* The joined devices and the rooms, with what goes to Home Assistant:
+     * published at the end of gateway_run when dirty, so a device's answer
+     * never waits for MQTT. */
+    struct gateway_device {
         bool used, dirty;
         uint8_t eui[8];
-        struct ha_device d;
+        uint8_t zone;         /* its room, 0 for none */
+        bool waiting;         /* asked for its config, which needs a room */
+        struct ha_device d;   /* with its serial, "" until a request named it */
         uint32_t discovered;  /* entities whose discovery config went out */
-    } devices[GATEWAY_MAX_DEVICES];
-    struct {                  /* by the index of the session's zone */
+    } devices[INSTALL_MAX_DEVICES];
+    struct gateway_room {
         bool used, dirty;
         uint8_t zone;
-        struct tado_report r;
+        uint16_t setpoint;    /* centi-degrees C */
+        char name[INSTALL_NAME_MAX + 1];
+        struct tado_report r; /* its owner's reports */
         uint32_t discovered;
-    } zones[SESSION_MAX_ZONES];
+    } rooms[INSTALL_MAX_ROOMS];
     char topic[96], payload[768]; /* publishing scratch */
 };
 
@@ -112,10 +121,32 @@ void gateway_new_identity(struct gateway_identity *id, void (*rng)(void *ctx, ui
  * timers; configures the CC1312 first when it needs it. Call in a loop. */
 void gateway_run(struct gateway *g, uint32_t timeout_ms);
 
-/* Opens a pair window of `seconds` for a device that becomes zone's owner. */
-bool gateway_pair(struct gateway *g, uint8_t zone, uint16_t seconds);
+/* Opens a pair window of `seconds`; the device that joins goes in no room.
+ * The setup page and tado/gateway/pair/set call it. */
+bool gateway_pair(struct gateway *g, uint16_t seconds);
+void gateway_close_pair(struct gateway *g);
 
-/* An MQTT message for the gateway: the pair command takes a zone number. */
+/* Seconds the pair window has left, 0 when none runs. */
+uint32_t gateway_pair_left(struct gateway *g);
+
+/* Rooms (setup page). A new room takes the lowest free zone number and the
+ * default setpoint; it returns that number, 0 when the table is full or the
+ * name is not one install_name_ok takes. Deleting a room puts its devices in
+ * no room. False when there is no such room or the name is bad. */
+uint8_t gateway_add_room(struct gateway *g, const char *name);
+bool gateway_rename_room(struct gateway *g, uint8_t zone, const char *name);
+bool gateway_delete_room(struct gateway *g, uint8_t zone);
+
+/* Puts a joined device in a room (zone 0: none). One device per room until
+ * zones get members (PLAN.md M4): false when the room has another device,
+ * or there is no such room or device. The device takes it at its next config
+ * read; one waiting for a room asks about once a minute. */
+bool gateway_assign(struct gateway *g, const uint8_t eui[8], uint8_t zone);
+
+struct gateway_device *gateway_device(struct gateway *g, const uint8_t eui[8]);
+struct gateway_room *gateway_room(struct gateway *g, uint8_t zone);
+
+/* An MQTT message for the gateway: tado/gateway/pair/set opens a window. */
 void gateway_command(struct gateway *g, const char *topic, const char *payload, size_t len);
 
 /* After MQTT (re)connects: discovery and state of everything known again. */

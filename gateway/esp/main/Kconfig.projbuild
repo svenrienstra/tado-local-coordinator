@@ -23,6 +23,17 @@ menu "tado gateway"
         string "MQTT password"
         default ""
 
+    config TADO_WEB_USERNAME
+        string "Setup page username"
+        default "admin"
+
+    config TADO_WEB_PASSWORD
+        string "Setup page password"
+        default ""
+        help
+            HTTP Basic, no TLS (docs/PLAN.md 3.3). Empty: the page refuses
+            everyone.
+
     config TADO_SNTP_SERVER
         string "SNTP server"
         default "pool.ntp.org"

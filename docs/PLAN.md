@@ -165,9 +165,9 @@ not single valves.
 
 As built in M2 (`gateway/app/ha.c`): sensors only, each published (discovery,
 retained) once it has a value: per device temperature, humidity, battery (V),
-signal and last seen; per zone temperature, setpoint and heating demand. The
-pair command `tado/gateway/pair/set` takes the zone number; the device that
-joins becomes that zone's owner. The climate entity and
+signal and last seen; per zone temperature, setpoint and heating demand,
+named after the room. `tado/gateway/pair/set` opens a pair window (any
+payload), as the setup page does (3.9). The climate entity and
 `tado/zone/<n>/setpoint/set` come with M3.
 
 - **Discovery:** for each zone, a retained config message on
@@ -222,10 +222,13 @@ from our own captures.
   which forwards each message byte for byte into the recipient's next window.
 - **Setpoints go to one device per zone**, the zone's writer: the owner where
   there is one. The others take the new setpoint from its echo.
-- **Gateway state:** a zone table in NVS (number, name, kind, members, owner).
-  A device is put in a zone when it is paired (the pair command carries the
-  zone) and can be moved later on the setup page (3.9). The owner is chosen
-  automatically: the thermostat if the zone has one, else a valve.
+- **Gateway state:** a room table in NVS (zone number, name, kind, members,
+  owner) and the joined devices. As in the tado app, a device is paired
+  first and then put in a room on the setup page (3.9).
+- **The owner is the room's controller**, chosen by default by what measures
+  the room best: the wall thermostat if the room has one, else a wireless
+  temperature sensor (`SENSOR.md`: it runs a zone as owner), else a valve.
+  The setup page can pick another one (3.9).
 - **Later option:** the coordinator as owner of a zone, regulating on a
   temperature sensor from Home Assistant. freedo does this; it adds a
   controller on the gateway.
@@ -253,15 +256,29 @@ server, one static page plus a JSON API, password-protected, no TLS — as 3.3).
 Home Assistant stays the place for daily use (temperatures, setpoints,
 schedules); it cannot offer a decent form for this.
 
-- Rooms: create, rename, delete; move devices between rooms; the owner (the
-  automatic choice by default); the zone options of 3.8.
-- Pairing: open a pair window for a chosen room.
-- Devices: list with status, battery and last seen.
-- Room changes are applied explicitly (edit, then apply), not per click:
-  rewriting a valve's `d/config` makes it home its motor, which costs a full
-  stroke and battery.
+- **Pair first, then assign a room**, as in the tado app. Add device opens a
+  pair window; the device that joins is listed under **No room**. Until it
+  has a room its `GET d/<serial>/config` goes unanswered, and it asks again
+  about once a minute: the sensor did exactly this after its first join
+  (`SENSOR.md`), and took the config the first time one was served. Putting
+  it in a room makes the gateway answer, so the device picks up its room
+  within a minute and nothing is written to it.
+- Rooms: create, rename, delete (its devices go back to No room); move
+  devices between rooms; the room's controller (its owner, 3.8): the
+  thermostat or sensor by default, any member on request; the zone options
+  of 3.8.
+- Devices: list with status, battery and last seen, and whether one is
+  waiting for a room.
+- Moving a device that already holds a room's config takes a config write or
+  `POST d/reboot` to reach it, and rewriting a valve's `d/config` makes it
+  home its motor (a full stroke, battery): such changes are applied
+  explicitly (edit, then apply), not per click. Not built yet (M4); until
+  then a move reaches a device at its next config read.
 
-Not needed before M4: at M2/M3 the pair command sets up the single room.
+**Built first (M2, 2026-11-18):** Add device, rooms (create, rename,
+delete), putting a device in a room or back to No room, and the device list.
+One device per room until M4 brings members, so that device is the
+controller; choosing one comes with members.
 
 **Fallback if the ESP runs out of room** (flash, heap, or CPU next to the
 protocol work; measured at M4): move the setup page off the ESP, either into a
@@ -392,10 +409,10 @@ Assistant.
 [`gateway/app`](../gateway/README.md) and its ESP-IDF build for the ESP32-S3 in
 `gateway/esp` (builds with ESP-IDF v6.1.1). On the Mac, against the CC1312
 firmware itself: configuring the CC1312 and configuring it again after it
-rebooted, frame counters in reserved blocks, the kept carrier, a pair command
-through to the joiner owning its zone, and a device report out as Home
-Assistant MQTT messages. `gateway/esp/tools/identity_nvs.py` carries the bench
-tool's identity over, so the sensor joined to it (zone 11) stays joined.
+rebooted, frame counters in reserved blocks, the kept carrier, pairing a
+device and then putting it in a room on the setup page (3.9), and a device
+report out as Home Assistant MQTT messages. The first hardware test pairs the
+sensor again, to the ESP's own key, and assigns it a room on the page.
 
 ### M3 — Control writes
 One zone with one valve: a setpoint from Home Assistant over MQTT reaches the

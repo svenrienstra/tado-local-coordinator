@@ -1,0 +1,55 @@
+#ifndef INSTALL_H
+#define INSTALL_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "session.h"
+
+/* The installation as it is kept in flash: the rooms and the devices joined
+ * to us, each in a room or in none (docs/PLAN.md 3.8, 3.9).
+ *
+ * Encoded as version 1, little-endian:
+ *   01 | n_rooms | (zone, setpoint u16, name_len, name)... |
+ *   n_devices | (eui[8], zone, serial_len, serial)...
+ * A room's zone is 1-255, a device's 0 when it is in no room. */
+
+#define INSTALL_MAX_ROOMS   SESSION_MAX_ZONES
+#define INSTALL_MAX_DEVICES 16
+#define INSTALL_NAME_MAX    23 /* bytes of UTF-8 */
+#define INSTALL_SERIAL_MAX  15
+#define INSTALL_VERSION     1
+#define INSTALL_MAX_BLOB \
+    (3 + INSTALL_MAX_ROOMS * (4 + INSTALL_NAME_MAX) + INSTALL_MAX_DEVICES * (10 + INSTALL_SERIAL_MAX))
+
+struct install_room {
+    uint8_t zone;
+    uint16_t setpoint; /* centi-degrees C */
+    char name[INSTALL_NAME_MAX + 1];
+};
+
+struct install_device {
+    uint8_t eui[8];
+    uint8_t zone;
+    char serial[INSTALL_SERIAL_MAX + 1];
+};
+
+struct install {
+    size_t n_rooms;
+    struct install_room rooms[INSTALL_MAX_ROOMS];
+    size_t n_devices;
+    struct install_device devices[INSTALL_MAX_DEVICES];
+};
+
+/* A room name: 1-23 bytes, no control characters, quotes or backslashes, so
+ * it goes into JSON and MQTT payloads as it is. */
+bool install_name_ok(const char *name, size_t len);
+
+/* Returns the length, 0 when it does not fit cap. */
+size_t install_encode(const struct install *in, uint8_t *out, size_t cap);
+
+/* False, with *in emptied, for anything but a whole version 1 blob. */
+bool install_decode(const uint8_t *blob, size_t len, struct install *in);
+
+#endif

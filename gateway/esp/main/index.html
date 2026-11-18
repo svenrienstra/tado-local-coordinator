@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tado gateway</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd; --accent: #2f6fdb; --warn: #b4560c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --card: #222226; --text: #ececea; --muted: #9a9a94; --line: #34343a; --accent: #6b9cf0; --warn: #f0a050; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  h2 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .status { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .device { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+  .badge { font-size: 12px; color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; }
+  button, select, input { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .error { color: var(--warn); min-height: 1.4em; font-size: 13px; }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>tado gateway</h1>
+  <div class="status" id="status">Loading…</div>
+  <div class="error" id="error"></div>
+
+  <h2>Add device</h2>
+  <div class="card">
+    <div class="row">
+      <div class="grow" id="pair-text">Pair a device, then put it in a room below.</div>
+      <button class="primary" id="pair">Add device</button>
+      <button id="pair-cancel" hidden>Cancel</button>
+    </div>
+  </div>
+
+  <h2>Rooms</h2>
+  <div id="rooms"></div>
+  <div class="card">
+    <form class="row" id="add-room">
+      <input class="grow" id="room-name" maxlength="23" placeholder="New room name" required>
+      <button type="submit">Add room</button>
+    </form>
+  </div>
+
+  <h2>No room</h2>
+  <div id="unassigned"></div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let state = null;
+
+function el(tag, props, ...children) {
+  const e = document.createElement(tag);
+  Object.assign(e, props || {});
+  for (const c of children) if (c != null) e.append(c);
+  return e;
+}
+
+async function call(path, fields) {
+  const body = new URLSearchParams(fields || {});
+  const r = await fetch(path, { method: "POST", headers: { "X-Tado": "1" }, body });
+  const answer = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(answer.error || r.statusText);
+  return answer;
+}
+
+async function act(path, fields) {
+  $("error").textContent = "";
+  try { await call(path, fields); } catch (e) { $("error").textContent = e.message; }
+  await refresh();
+}
+
+function seen(iso) {
+  if (!iso) return null;
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+function deviceLine(d) {
+  const s = d.state || {};
+  const facts = [
+    s.temperature != null ? `${s.temperature.toFixed(1)} °C` : null,
+    s.humidity != null ? `${s.humidity.toFixed(0)} %` : null,
+    s.battery != null ? `battery ${s.battery.toFixed(2)} V` : null,
+    s.rssi != null ? `${s.rssi} dBm` : null,
+    seen(s.last_seen),
+  ].filter(Boolean);
+  const move = el("select", { title: "Room" });
+  move.append(el("option", { value: "0", textContent: "No room" }));
+  for (const r of state.rooms) {
+    const taken = state.devices.some((o) => o.zone === r.zone && o.eui !== d.eui);
+    move.append(el("option", { value: String(r.zone), textContent: r.name + (taken ? " (has a device)" : ""), disabled: taken }));
+  }
+  move.value = String(d.zone);
+  move.onchange = () => act(`/api/devices/${d.eui}`, { zone: move.value });
+  return el("div", { className: "device row" },
+    el("div", { className: "grow" },
+      el("div", { className: "name" }, d.serial || d.eui, " ",
+        d.waiting ? el("span", { className: "badge", textContent: "waiting for a room" }) : null),
+      el("div", { className: "meta", textContent: facts.join(" · ") || "no report yet" })),
+    move);
+}
+
+function render() {
+  const p = state.pair;
+  $("status").textContent = [
+    state.cc1312 ? "radio ready" : "radio not ready",
+    state.clock ? "clock set" : "clock not set yet",
+    `home ${state.home}`,
+  ].join(" · ");
+
+  const texts = {
+    idle: "Pair a device, then put it in a room below.",
+    open: `Long-press the device's button now (${p.left} s left).`,
+    joining: "A device is joining…",
+    joined: `Device ${p.joined} joined. Put it in a room below.`,
+    failed: "The device did not take our key. Reset it and try again.",
+    closed: "No device joined. Try again?",
+  };
+  $("pair-text").textContent = texts[p.state] || p.state;
+  const busy = p.state === "open" || p.state === "joining";
+  $("pair").hidden = busy;
+  $("pair-cancel").hidden = p.state !== "open";
+
+  const rooms = $("rooms");
+  rooms.replaceChildren();
+  if (!state.rooms.length) rooms.append(el("div", { className: "empty card", textContent: "No rooms yet." }));
+  for (const r of state.rooms) {
+    const s = r.state || {};
+    const facts = [
+      s.temperature != null ? `${s.temperature.toFixed(1)} °C` : null,
+      s.setpoint != null ? `set to ${s.setpoint.toFixed(1)} °C` : null,
+      s.demand != null ? `heating ${s.demand} %` : null,
+    ].filter(Boolean);
+    const rename = el("button", { textContent: "Rename" });
+    rename.onclick = () => {
+      const name = prompt("Room name", r.name);
+      if (name && name !== r.name) act(`/api/rooms/${r.zone}`, { name });
+    };
+    const del = el("button", { textContent: "Delete" });
+    del.onclick = () => { if (confirm(`Delete ${r.name}? Its device goes to No room.`)) act(`/api/rooms/${r.zone}/delete`); };
+    const card = el("div", { className: "card" },
+      el("div", { className: "row" },
+        el("div", { className: "grow" },
+          el("div", { className: "name", textContent: r.name }),
+          el("div", { className: "meta", textContent: facts.join(" · ") || `zone ${r.zone}` })),
+        rename, del));
+    const devices = state.devices.filter((d) => d.zone === r.zone);
+    if (!devices.length) card.append(el("div", { className: "device meta", textContent: "No device in this room." }));
+    for (const d of devices) card.append(deviceLine(d));
+    rooms.append(card);
+  }
+
+  const unassigned = $("unassigned");
+  unassigned.replaceChildren();
+  const none = state.devices.filter((d) => !state.rooms.some((r) => r.zone === d.zone));
+  if (!none.length) unassigned.append(el("div", { className: "empty card", textContent: "Every device has a room." }));
+  else unassigned.append(el("div", { className: "card" }, ...none.map(deviceLine)));
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state");
+    if (!r.ok) throw new Error(r.statusText);
+    state = await r.json();
+    render();
+  } catch (e) {
+    $("status").textContent = `Gateway not reachable (${e.message})`;
+  }
+}
+
+$("pair").onclick = () => act("/api/pair");
+$("pair-cancel").onclick = () => act("/api/pair/close");
+$("add-room").onsubmit = (e) => {
+  e.preventDefault();
+  const name = $("room-name").value.trim();
+  if (name) act("/api/rooms", { name }).then(() => { $("room-name").value = ""; });
+};
+refresh();
+setInterval(() => { if (!document.querySelector("select:focus")) refresh(); }, 2000);
+</script>
+</body>
+</html>

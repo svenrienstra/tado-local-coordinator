@@ -455,6 +455,13 @@ static void repeat_zone_writes(struct session *s, uint32_t now)
 
 /* --- CoAP ------------------------------------------------------------------- */
 
+static void requested(struct session *s, const uint8_t device[8], const struct coap_msg *m, const char *path,
+                      bool answered)
+{
+    if (s->ops.on_request)
+        s->ops.on_request(s->ops.ctx, device, m->code, path, answered);
+}
+
 static void on_coap(struct session *s, const struct link_event *ev, const struct lowpan_datagram *d, uint32_t now)
 {
     const uint8_t *src = ev->rx.src;
@@ -530,6 +537,7 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
         uint32_t unix = s->ops.unix_time(s->ops.ctx);
         if (unix == 0) {
             say(s, "time from %s: no wall-clock time yet, not answered", eui_str(src, e));
+            requested(s, src, &m, path, false);
             return;
         }
         say(s, "time from %s", eui_str(src, e));
@@ -548,8 +556,10 @@ static void on_coap(struct session *s, const struct link_event *ev, const struct
         n = tado_changed_answer(a->packet, sizeof a->packet, &m, d, s->coordinator, src);
     } else {
         say(s, "CoAP %u.%02u %s from %s (not handled yet)", m.code >> 5, m.code & 0x1f, path, eui_str(src, e));
+        requested(s, src, &m, path, false);
         return;
     }
+    requested(s, src, &m, path, true);
     answer(s, a, src, m.mid, n, now);
 }
 

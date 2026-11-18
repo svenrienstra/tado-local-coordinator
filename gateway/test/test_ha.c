@@ -17,12 +17,12 @@ static void a_discovery_config_byte_for_byte(void)
                  "\"name\":\"tado SU2922080256\",\"manufacturer\":\"tado\",\"model\":\"Wireless Temperature Sensor\","
                  "\"serial_number\":\"SU2922080256\"}}") == 0);
 
-    CHECK(ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, HA_ZONE_DEMAND));
+    CHECK(ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, "Living", HA_ZONE_DEMAND));
     CHECK(strcmp(topic, "homeassistant/sensor/tado_zone_11/demand/config") == 0);
     CHECK(strstr(payload, "\"state_topic\":\"tado/zone/11/state\"") && strstr(payload, "\"icon\":\"mdi:radiator\""));
 
     /* A device entity is not a zone's, and the other way round. */
-    CHECK(!ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, HA_TEMPERATURE));
+    CHECK(!ha_zone_discovery(topic, sizeof topic, payload, sizeof payload, 11, "Living", HA_TEMPERATURE));
     CHECK(!ha_device_discovery(topic, sizeof topic, payload, sizeof payload, "VA1", HA_ZONE_DEMAND));
     /* The longest serial allowed still makes a whole config. */
     CHECK(ha_device_discovery(topic, sizeof topic, payload, sizeof payload, "SU1234567890123", HA_BATTERY));

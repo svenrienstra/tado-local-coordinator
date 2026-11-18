@@ -81,6 +81,23 @@ static void stub_on_report(void *ctx, const uint8_t device[8], const char *path,
     reported.r = *r;
 }
 
+/* The last request the gateway was told of. */
+static struct {
+    int count;
+    uint8_t code;
+    char path[64];
+    bool answered;
+} requests;
+
+static void stub_on_request(void *ctx, const uint8_t device[8], uint8_t code, const char *path, bool answered)
+{
+    (void)ctx, (void)device;
+    requests.count++;
+    requests.code = code;
+    snprintf(requests.path, sizeof requests.path, "%s", path);
+    requests.answered = answered;
+}
+
 /* What the gateway does with a new device: the zone its pair command named. */
 static int joined_count;
 static int join_into_zone = -1;
@@ -97,6 +114,7 @@ static const struct session_ops OPS = {.tx = stub_tx,
                                        .rng = stub_rng,
                                        .unix_time = stub_unix,
                                        .on_report = stub_on_report,
+                                       .on_request = stub_on_request,
                                        .on_joined = stub_on_joined};
 
 static const uint8_t *coordinator(void) { return V("in.coord_eui")->data; }
@@ -111,6 +129,7 @@ static void fresh(struct session *s, bool pair_window)
     refuse_next = 0;
     clock_unset = false;
     memset(&reported, 0, sizeof reported);
+    memset(&requests, 0, sizeof requests);
     joined_count = 0;
     join_into_zone = -1;
     struct session_ops ops = OPS;
@@ -817,6 +836,20 @@ static void a_device_without_a_zone_gets_no_config(void)
     struct coap_msg m = get(0x0302, "d/VA0000000001/config");
     from_joiner(&s, false, &m);
     CHECK(n_sent == 0);
+    /* The gateway hears of it: the device waits for a room. */
+    CHECK(requests.count == 1 && requests.code == COAP_GET && !requests.answered);
+    CHECK(strcmp(requests.path, "d/VA0000000001/config") == 0);
+
+    session_set_zone(&s, 2, joiner(), SESSION_DEFAULT_SETPOINT);
+    m = get(0x0303, "d/VA0000000001/config");
+    from_joiner(&s, false, &m);
+    CHECK(n_sent == 1 && requests.count == 2 && requests.answered);
+
+    /* Repeats and requests under the pairing key are not new requests. */
+    from_joiner(&s, false, &m);
+    m = get(0x0304, "d/VA0000000001/config");
+    from_joiner(&s, true, &m);
+    CHECK(requests.count == 2);
 }
 
 /* The sensor's report as it sent it (docs/SENSOR.md): handed to the gateway

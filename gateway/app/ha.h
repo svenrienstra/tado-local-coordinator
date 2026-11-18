@@ -57,9 +57,12 @@ size_t ha_zone_state_topic(char *out, size_t cap, unsigned zone);
 size_t ha_zone_state(char *out, size_t cap, const struct tado_report *zone);
 
 /* The discovery topic and config of one entity of a device (by serial) or a
- * zone; false when it does not fit or e belongs to the other kind. */
+ * zone, which Home Assistant shows under the room's name (no quotes or
+ * backslashes: install_name_ok); false when it does not fit or e belongs to
+ * the other kind. */
 bool ha_device_discovery(char *topic, size_t tcap, char *payload, size_t pcap, const char *serial,
                          enum ha_entity e);
-bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, enum ha_entity e);
+bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, const char *name,
+                       enum ha_entity e);
 
 #endif

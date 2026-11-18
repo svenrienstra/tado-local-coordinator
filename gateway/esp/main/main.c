@@ -1,9 +1,10 @@
 /* The ESP32-S3 gateway: ESP-IDF around ../../app/gateway.c, which does the
  * work and is tested on the Mac. This file only gives it a UART to the
- * CC1312, NVS, the clock, WiFi and MQTT (docs/PLAN.md 4.2).
+ * CC1312, NVS, the clock, WiFi, MQTT and the setup page's HTTP server
+ * (docs/PLAN.md 4.2, 3.9).
  *
- * One task owns the gateway; MQTT's task hands it messages through a queue,
- * as the gateway is not thread-safe. */
+ * One task owns the gateway; the MQTT and HTTP tasks hand it their work
+ * through a queue, as the gateway is not thread-safe. */
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/time.h>
@@ -13,6 +14,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_event.h"
+#include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
@@ -21,22 +23,21 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
-#include "bytes.h"
 #include "gateway.h"
+#include "web.h"
 
 static const char *TAG = "tado";
 
 #define CC1312_UART      UART_NUM_1
 #define CC1312_BAUD      460800
 #define NVS_NAMESPACE    "tado"
-/* A zone in NVS: zone, owner EUI (wire order), setpoint (centi-C, LE). */
-#define ZONE_RECORD_LEN  11
 /* Before this the clock is not set (2025-01-01): no time answers. */
 #define CLOCK_SET_AFTER  1735689600
 
@@ -84,16 +85,14 @@ static bool load_identity(struct gateway_identity *id)
         /* The devices know their home by its id: a new one would orphan them. */
         halt("no home id in NVS");
     }
-    uint8_t zones[SESSION_MAX_ZONES * ZONE_RECORD_LEN];
-    size_t len = sizeof zones;
-    if (nvs_get_blob(nvs, "zones", zones, &len) == ESP_OK) {
-        for (size_t i = 0; i + ZONE_RECORD_LEN <= len && id->n_zones < SESSION_MAX_ZONES; i += ZONE_RECORD_LEN) {
-            struct gateway_zone *z = &id->zones[id->n_zones++];
-            z->zone = zones[i];
-            memcpy(z->owner, &zones[i + 1], 8);
-            z->setpoint = get16(&zones[i + 9]);
-        }
-    }
+    /* Rooms and devices: a bad copy loses the rooms, not the devices' key. */
+    uint8_t blob[INSTALL_MAX_BLOB];
+    size_t len = sizeof blob;
+    esp_err_t err = nvs_get_blob(nvs, "inst", blob, &len);
+    if (err == ESP_OK && !install_decode(blob, len, &id->install))
+        ESP_LOGE(TAG, "the rooms in NVS are damaged: starting without rooms and devices");
+    else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND)
+        nvs_ok(err, "inst");
     return true;
 }
 
@@ -154,17 +153,10 @@ static void gw_save_channel(void *ctx, uint32_t khz)
     save(nvs_set_u32(nvs, "channel", khz), "channel");
 }
 
-static void gw_save_zones(void *ctx, const struct gateway_zone *zones, size_t n)
+static void gw_save_install(void *ctx, const uint8_t *blob, size_t len)
 {
     (void)ctx;
-    uint8_t blob[SESSION_MAX_ZONES * ZONE_RECORD_LEN];
-    for (size_t i = 0; i < n; i++) {
-        uint8_t *r = &blob[i * ZONE_RECORD_LEN];
-        r[0] = zones[i].zone;
-        memcpy(&r[1], zones[i].owner, 8);
-        put16(&r[9], zones[i].setpoint);
-    }
-    save(nvs_set_blob(nvs, "zones", blob, n * ZONE_RECORD_LEN), "zones");
+    save(nvs_set_blob(nvs, "inst", blob, len), "inst");
 }
 
 static void link_write(void *ctx, const uint8_t *bytes, size_t len)
@@ -230,7 +222,7 @@ static void cc1312_init(void)
 
 /* --- MQTT and its messages to the gateway task ------------------------------ */
 
-enum command_kind { COMMAND_ANNOUNCE, COMMAND_MESSAGE };
+enum command_kind { COMMAND_ANNOUNCE, COMMAND_MESSAGE, COMMAND_WEB };
 
 struct command {
     enum command_kind kind;
@@ -288,6 +280,94 @@ static void mqtt_start(void)
     ESP_ERROR_CHECK(esp_mqtt_client_start(mqtt));
 }
 
+/* --- the setup page -------------------------------------------------------- */
+
+extern const char index_html_start[] asm("_binary_index_html_start");
+extern const char index_html_end[] asm("_binary_index_html_end");
+
+/* The one request in flight: the server runs one handler at a time, and the
+ * gateway task answers it (web_handle) and gives done. */
+static struct {
+    char method[8];
+    char path[64];
+    char body[WEB_MAX_BODY + 1];
+    size_t len;
+    int status;
+    char out[8192];
+    SemaphoreHandle_t done;
+} call;
+
+static bool authorized(httpd_req_t *req)
+{
+    char header[160] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof header) == ESP_OK &&
+        web_auth_ok(header, CONFIG_TADO_WEB_USERNAME, CONFIG_TADO_WEB_PASSWORD))
+        return true;
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"tado gateway\"");
+    httpd_resp_sendstr(req, "");
+    return false;
+}
+
+static esp_err_t on_page(httpd_req_t *req)
+{
+    if (!authorized(req))
+        return ESP_OK;
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1); /* without the NUL EMBED_TXTFILES adds */
+}
+
+static esp_err_t on_api(httpd_req_t *req)
+{
+    if (!authorized(req))
+        return ESP_OK;
+    bool post = req->method == HTTP_POST;
+    char marker[4];
+    /* A header a cross-site form cannot set: no changes from other pages. */
+    if (post && httpd_req_get_hdr_value_str(req, "X-Tado", marker, sizeof marker) != ESP_OK) {
+        httpd_resp_set_status(req, "403 Forbidden");
+        return httpd_resp_sendstr(req, "{\"error\":\"X-Tado header required\"}");
+    }
+    if (req->content_len > WEB_MAX_BODY || strlen(req->uri) >= sizeof call.path) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"too long\"}");
+    }
+    call.len = 0;
+    while (call.len < req->content_len) {
+        int n = httpd_req_recv(req, call.body + call.len, req->content_len - call.len);
+        if (n <= 0)
+            return ESP_FAIL;
+        call.len += (size_t)n;
+    }
+    call.body[call.len] = '\0';
+    strcpy(call.method, post ? "POST" : "GET");
+    strcpy(call.path, req->uri);
+    struct command c = {.kind = COMMAND_WEB};
+    xQueueSend(commands, &c, portMAX_DELAY);
+    xSemaphoreTake(call.done, portMAX_DELAY);
+    char status[16];
+    snprintf(status, sizeof status, "%d", call.status);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, call.out);
+}
+
+static void web_start(void)
+{
+    call.done = xSemaphoreCreateBinary();
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
+    httpd_handle_t server;
+    ESP_ERROR_CHECK(httpd_start(&server, &cfg));
+    static const httpd_uri_t uris[] = {
+        {.uri = "/", .method = HTTP_GET, .handler = on_page},
+        {.uri = "/api/*", .method = HTTP_GET, .handler = on_api},
+        {.uri = "/api/*", .method = HTTP_POST, .handler = on_api},
+    };
+    for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
+        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uris[i]));
+}
+
 /* --- WiFi and time ---------------------------------------------------------- */
 
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -330,10 +410,14 @@ static void gateway_task(void *arg)
     struct command c;
     for (;;) {
         while (xQueueReceive(commands, &c, 0) == pdTRUE) {
-            if (c.kind == COMMAND_ANNOUNCE)
+            if (c.kind == COMMAND_ANNOUNCE) {
                 gateway_announce(&gw);
-            else
+            } else if (c.kind == COMMAND_WEB) {
+                call.status = web_handle(&gw, call.method, call.path, call.body, call.len, call.out, sizeof call.out);
+                xSemaphoreGive(call.done);
+            } else {
                 gateway_command(&gw, c.topic, c.payload, c.len);
+            }
         }
         gateway_run(&gw, 50);
     }
@@ -350,7 +434,7 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs));
     commands = xQueueCreate(8, sizeof(struct command));
 
-    struct gateway_identity id = {0};
+    static struct gateway_identity id;
     if (!load_identity(&id)) {
         /* The network key must be truly random: without WiFi running yet, the
          * RNG needs its entropy source switched on (esp_random.h). */
@@ -360,8 +444,8 @@ void app_main(void)
         save_identity(&id);
         ESP_LOGW(TAG, "new identity: home %lu; devices must be paired to it", (unsigned long)id.home_id);
     }
-    ESP_LOGI(TAG, "home %lu, %u zone(s), counter floor %lu", (unsigned long)id.home_id, (unsigned)id.n_zones,
-             (unsigned long)id.counter_floor);
+    ESP_LOGI(TAG, "home %lu, %u room(s), %u device(s), counter floor %lu", (unsigned long)id.home_id,
+             (unsigned)id.install.n_rooms, (unsigned)id.install.n_devices, (unsigned long)id.counter_floor);
 
     wifi_start();
     cc1312_init();
@@ -371,10 +455,11 @@ void app_main(void)
                                            .publish = gw_publish,
                                            .save_counter_floor = gw_save_floor,
                                            .save_channel = gw_save_channel,
-                                           .save_zones = gw_save_zones};
+                                           .save_install = gw_save_install};
     static const struct gwlink_ops link = {.write = link_write, .read = link_read, .now_ms = link_now};
     gateway_init(&gw, &id, &ops, &link);
 
     mqtt_start();
     xTaskCreate(gateway_task, "gateway", 16384, NULL, 5, NULL);
+    web_start();
 }

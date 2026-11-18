@@ -13,6 +13,7 @@
 #include "hlframe.h"
 #include "lowpan.h"
 #include "mac.h"
+#include "web.h"
 
 static struct coordinator fw;
 static struct gateway gw;
@@ -64,8 +65,8 @@ static struct {
 static size_t n_published;
 static uint32_t saved_floor, saved_channel;
 static bool refuse_save;
-static struct gateway_zone saved_zones[SESSION_MAX_ZONES];
-static size_t n_saved_zones;
+static struct install saved; /* the installation as last saved, decoded */
+static int install_saves;
 static uint64_t rng_state;
 
 static void gw_log(void *ctx, const char *line)
@@ -116,11 +117,11 @@ static void gw_save_channel(void *ctx, uint32_t khz)
     saved_channel = khz;
 }
 
-static void gw_save_zones(void *ctx, const struct gateway_zone *zones, size_t n)
+static void gw_save_install(void *ctx, const uint8_t *blob, size_t len)
 {
     (void)ctx;
-    memcpy(saved_zones, zones, n * sizeof *zones);
-    n_saved_zones = n;
+    CHECK(install_decode(blob, len, &saved));
+    install_saves++;
 }
 
 static const struct gateway_ops OPS = {.log = gw_log,
@@ -129,7 +130,7 @@ static const struct gateway_ops OPS = {.log = gw_log,
                                        .publish = gw_publish,
                                        .save_counter_floor = gw_save_floor,
                                        .save_channel = gw_save_channel,
-                                       .save_zones = gw_save_zones};
+                                       .save_install = gw_save_install};
 
 /* The last message on topic, or NULL. */
 static const char *last_on(const char *topic)
@@ -161,6 +162,18 @@ static struct gateway_identity identity(uint32_t floor)
     return id;
 }
 
+/* The sensor in room Living (zone 11), as a previous run saved it. */
+static struct gateway_identity identity_with_room(uint32_t floor)
+{
+    struct gateway_identity id = identity(floor);
+    id.install.n_rooms = 1;
+    id.install.rooms[0] = (struct install_room){.zone = 11, .setpoint = 1800, .name = "Living"};
+    id.install.n_devices = 1;
+    id.install.devices[0] = (struct install_device){.zone = 11, .serial = "SU2922080256"};
+    memcpy(id.install.devices[0].eui, device(), 8);
+    return id;
+}
+
 /* A fresh CC1312 that just booted, and a gateway started next to it. */
 static void start(const struct gateway_identity *id)
 {
@@ -171,7 +184,8 @@ static void start(const struct gateway_identity *id)
     n_published = 0;
     saved_floor = saved_channel = 0;
     refuse_save = false;
-    n_saved_zones = 0;
+    memset(&saved, 0, sizeof saved);
+    install_saves = 0;
     rng_state = 7;
     fw_unsupported = false;
     clock_set = true;
@@ -358,10 +372,7 @@ static void keeps_the_carrier_the_cc1312_retunes_to(void)
  * sensor that has a value, then the retained state of device and zone. */
 static void publishes_a_report_for_home_assistant(void)
 {
-    struct gateway_identity id = identity(5000);
-    id.n_zones = 1;
-    id.zones[0] = (struct gateway_zone){.zone = 11, .setpoint = 1800};
-    memcpy(id.zones[0].owner, device(), 8);
+    struct gateway_identity id = identity_with_room(5000);
     start(&id);
     run(3);
     n_published = 0;
@@ -382,7 +393,8 @@ static void publishes_a_report_for_home_assistant(void)
     const char *state = last_on("tado/device/SU2922080256/state");
     CHECK(state && strcmp(state, "{\"temperature\":18.66,\"humidity\":56.5,\"battery\":4.175,\"rssi\":-61,"
                                  "\"last_seen\":\"2026-11-06T12:00:00Z\"}") == 0);
-    CHECK(last_on("homeassistant/sensor/tado_zone_11/temperature/config") != NULL);
+    const char *zone_config = last_on("homeassistant/sensor/tado_zone_11/temperature/config");
+    CHECK(zone_config && strstr(zone_config, "\"name\":\"Living\"")); /* the room's name */
     CHECK(last_on("homeassistant/sensor/tado_zone_11/demand/config") == NULL); /* no demand yet */
     const char *zone = last_on("tado/zone/11/state");
     CHECK(zone && strcmp(zone, "{\"temperature\":18.66}") == 0);
@@ -449,65 +461,153 @@ static void device_answers_d_pair(const struct coap_msg *pair)
     run(1);
 }
 
-/* The pair command names the zone; the device that joins becomes its owner,
- * kept in flash, and the CC1312 stops answering under the pairing key. */
-static void a_pair_command_ends_with_the_joiner_owning_its_zone(void)
+/* The device asks for its config, as the sensor does about once a minute. */
+static void device_asks_config(uint16_t mid, uint8_t seq)
+{
+    struct coap_msg get = {.type = COAP_CON, .code = COAP_GET, .mid = mid};
+    coap_add_path(&get, "d/SU2922080256/config");
+    device_sends_coap(&get, seq, 0x1000u + mid);
+    run(1);
+}
+
+static int web(const char *method, const char *path, const char *body, char *out, size_t cap)
+{
+    return web_handle(&gw, method, path, body, strlen(body), out, cap);
+}
+
+/* As in the tado app: pair first, then put the device in a room. Until then
+ * its config request goes unanswered and it is listed as waiting; once in a
+ * room it gets the room's zone at its next request, and it stays there after
+ * a restart. */
+static void a_paired_device_waits_for_a_room_then_takes_it(void)
 {
     struct gateway_identity id = identity(5000);
     start(&id);
     run(3);
-
-    gateway_command(&gw, HA_PAIR_TOPIC, "zone", 4);
-    gateway_command(&gw, HA_PAIR_TOPIC, "0", 1);
-    CHECK(!fw.pair_open && !gw.pairing);
-    gateway_command(&gw, HA_PAIR_TOPIC, " 3\n", 3);
-    CHECK(fw.pair_open && gw.pairing && gw.pair_zone == 3);
-
+    gateway_command(&gw, HA_PAIR_TOPIC, "", 0);
+    CHECK(fw.pair_open && gw.pair == GATEWAY_PAIR_OPEN);
     struct coap_msg pair = joiner_gets_d_pair();
-    /* The 2.04 under our key. */
     device_answers_d_pair(&pair);
-    CHECK(!gw.pairing && !fw.pair_open);
-    CHECK(n_saved_zones == 1 && saved_zones[0].zone == 3 && memcmp(saved_zones[0].owner, device(), 8) == 0);
-    CHECK(gw.session.zones[0].used && gw.session.zones[0].zone == 3);
-    CHECK(logged("owner of zone 3"));
+    CHECK(!gw.pairing && !fw.pair_open && gw.pair == GATEWAY_PAIR_JOINED);
+    CHECK(saved.n_devices == 1 && memcmp(saved.devices[0].eui, device(), 8) == 0 && saved.devices[0].zone == 0);
+    CHECK(logged("joined: put it in a room"));
+
+    size_t queued = fw.queue_len;
+    device_asks_config(0x3101, 0x60);
+    CHECK(fw.queue_len == queued); /* unanswered */
+    struct gateway_device *d = gateway_device(&gw, device());
+    CHECK(d && d->waiting && strcmp(d->d.serial, "SU2922080256") == 0);
+    CHECK(strcmp(saved.devices[0].serial, "SU2922080256") == 0);
+    CHECK(logged("waits for a room"));
+
+    static char out[4096];
+    CHECK(web("POST", "/api/rooms", "name=Living+room", out, sizeof out) == 200 && strcmp(out, "{\"zone\":1}") == 0);
+    CHECK(web("POST", "/api/devices/0bb1cefa07c51b00", "zone=1", out, sizeof out) == 200);
+    CHECK(saved.n_rooms == 1 && strcmp(saved.rooms[0].name, "Living room") == 0 && saved.devices[0].zone == 1);
+
+    int jobs_before = jobs;
+    device_asks_config(0x3102, 0x61);
+    CHECK(!d->waiting);
+    for (int i = 0; i < 200 && jobs == jobs_before; i++)
+        run(1); /* the answer waits for the device's channel sample */
+    CHECK(jobs == jobs_before + 1);
+    static uint8_t scratch[MAC_MAX_FRAME];
+    struct mac_data md;
+    struct lowpan_datagram dg;
+    struct coap_msg answer;
+    CHECK(mac_open_data(job_frame, job_len, network_key(), scratch, &md) &&
+          lowpan_parse(md.packet, md.packet_len, coordinator(), device(), &dg) &&
+          coap_decode(dg.payload, dg.payload_len, &answer));
+    static const struct tado_zone_role owner1 = {TADO_ROLE_OWNER, 1};
+    uint8_t want[64];
+    size_t wn = tado_device_config(want, sizeof want, 4242, &owner1, 1);
+    CHECK(answer.code == COAP_CODE(2, 5) && answer.mid == 0x3102);
+    CHECK_BYTES(answer.payload, answer.payload_len, want, wn);
+
+    CHECK(web("GET", "/api/state", "", out, sizeof out) == 200);
+    CHECK(strstr(out, "\"rooms\":[{\"zone\":1,\"name\":\"Living room\",\"setpoint\":1800,\"state\":{}}]"));
+    CHECK(strstr(out, "{\"eui\":\"0bb1cefa07c51b00\",\"serial\":\"SU2922080256\",\"zone\":1,\"waiting\":false,"));
+    CHECK(strstr(out, "\"pair\":{\"state\":\"joined\",\"left\":0,\"joined\":\"0bb1cefa07c51b00\"}"));
+
+    /* After a restart the room is served from flash. */
+    struct gateway_identity again = identity(saved_floor);
+    again.install = saved;
+    start(&again);
+    run(3);
+    CHECK(gw.session.zones[0].used && gw.session.zones[0].zone == 1 &&
+          memcmp(gw.session.zones[0].owner, device(), 8) == 0);
+}
+
+/* One device per room until zones get members; a device leaves a room for
+ * none, and a deleted room leaves its devices in none and Home Assistant. */
+static void rooms_and_devices_on_the_setup_page(void)
+{
+    struct gateway_identity id = identity_with_room(5000);
+    uint8_t other[8];
+    memcpy(other, device(), 8);
+    other[0] ^= 0x10;
+    id.install.n_devices = 2;
+    id.install.devices[1] = (struct install_device){.zone = 0};
+    memcpy(id.install.devices[1].eui, other, 8);
+    start(&id);
+    run(3);
+    static char out[4096];
+
+    CHECK(!gateway_assign(&gw, other, 11)); /* the sensor has it */
+    CHECK(web("POST", "/api/devices/1bb1cefa07c51b00", "zone=11", out, sizeof out) == 409);
+    CHECK(web("POST", "/api/devices/1bb1cefa07c51b00", "zone=7", out, sizeof out) == 409); /* no room 7 */
+    CHECK(web("POST", "/api/devices/ffb1cefa07c51b00", "zone=0", out, sizeof out) == 404);
+    CHECK(web("POST", "/api/devices/1bb1cefa07c51b00", "zone=x", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms", "name=Bad%22name", out, sizeof out) == 400);
+    CHECK(web("POST", "/api/rooms/12", "name=Kitchen", out, sizeof out) == 404);
+    CHECK(web("GET", "/api/rooms", "", out, sizeof out) == 404);
+    CHECK(web("PUT", "/api/state", "", out, sizeof out) == 405);
+
+    /* The sensor out of its room: zone 11 is no longer served. */
+    CHECK(gateway_assign(&gw, device(), 0));
+    CHECK(!gw.session.zones[0].used);
+    CHECK(gateway_assign(&gw, other, 11) && gw.session.zones[0].used &&
+          memcmp(gw.session.zones[0].owner, other, 8) == 0);
+
+    /* Rename: discovery again under the new name. A report gives the room a
+     * state first, from its owner. */
+    static const uint8_t act[] = {0x40, 0xa0, 0x01, 0x23};
+    struct coap_msg put = {.type = COAP_CON, .code = COAP_PUT, .mid = 0x3301, .payload = act,
+                           .payload_len = sizeof act};
+    coap_add_path(&put, "h/4242/z/11/act");
+    uint8_t coap[64], packet[96], frame[MAC_MAX_FRAME];
+    size_t cn = coap_encode(&put, coap, sizeof coap);
+    size_t pn = lowpan_udp(packet, sizeof packet, other, coordinator(), 5683, 5683, coap, cn);
+    size_t fn = mac_seal_unicast(frame, network_key(), false, 0x70, coordinator(), other, 0x2000, packet, pn);
+    coord_on_rx(&fw, frame, fn, -50, fw_rat += 4000, 0);
+    run(1);
+    CHECK(last_on("homeassistant/sensor/tado_zone_11/demand/config") != NULL);
+    n_published = 0;
+    CHECK(web("POST", "/api/rooms/11", "name=Study", out, sizeof out) == 200);
+    run(1);
+    CHECK(strstr(last_on("homeassistant/sensor/tado_zone_11/demand/config"), "\"name\":\"Study\""));
+
+    /* Delete: its device goes to no room, its entities leave Home Assistant. */
+    CHECK(web("POST", "/api/rooms/11/delete", "", out, sizeof out) == 200);
+    CHECK(gateway_device(&gw, other)->zone == 0 && !gw.session.zones[0].used && !gateway_room(&gw, 11));
+    CHECK(strcmp(last_on("homeassistant/sensor/tado_zone_11/demand/config"), "") == 0);
+    CHECK(saved.n_rooms == 0 && saved.devices[1].zone == 0);
 }
 
 /* A window that ends while d/pair is out does not cut the join short, and a
- * second pair command does not take it over. */
+ * second window does not take it over. */
 static void a_join_under_way_outlasts_its_window(void)
 {
     struct gateway_identity id = identity(5000);
     start(&id);
     run(3);
-    CHECK(gateway_pair(&gw, 3, 1));
+    CHECK(gateway_pair(&gw, 1));
     struct coap_msg pair = joiner_gets_d_pair();
     CHECK(session_pair_state(&gw.session) == SESSION_PAIR_PAIRING);
     run(120); /* past the window */
-    CHECK(gw.pairing && !gateway_pair(&gw, 7, 120) && gw.pair_zone == 3);
+    CHECK(gw.pairing && gw.pair == GATEWAY_PAIR_JOINING && !gateway_pair(&gw, 120));
     device_answers_d_pair(&pair);
-    CHECK(n_saved_zones == 1 && saved_zones[0].zone == 3);
-}
-
-/* Paired again into another zone, a device leaves the zone it owned. */
-static void a_device_paired_into_another_zone_leaves_its_old_one(void)
-{
-    struct gateway_identity id = identity(5000);
-    id.n_zones = 2;
-    id.zones[0] = (struct gateway_zone){.zone = 3, .setpoint = 1800};
-    memcpy(id.zones[0].owner, device(), 8);
-    id.zones[1] = (struct gateway_zone){.zone = 4, .setpoint = 2000};
-    memset(id.zones[1].owner, 0x44, 8);
-    start(&id);
-    run(3);
-    CHECK(gateway_pair(&gw, 5, 120));
-    struct coap_msg pair = joiner_gets_d_pair();
-    device_answers_d_pair(&pair);
-    CHECK(n_saved_zones == 2 && saved_zones[0].zone + saved_zones[1].zone == 4 + 5 &&
-          saved_zones[0].zone != 3 && saved_zones[1].zone != 3);
-    size_t owned = 0;
-    for (size_t i = 0; i < SESSION_MAX_ZONES; i++)
-        owned += gw.session.zones[i].used && memcmp(gw.session.zones[i].owner, device(), 8) == 0;
-    CHECK(owned == 1);
+    CHECK(gw.pair == GATEWAY_PAIR_JOINED && saved.n_devices == 1);
 }
 
 static void a_pair_window_without_a_joiner_closes_at_its_end(void)
@@ -515,13 +615,14 @@ static void a_pair_window_without_a_joiner_closes_at_its_end(void)
     struct gateway_identity id = identity(5000);
     start(&id);
     run(3);
-    CHECK(gateway_pair(&gw, 4, 2));
+    CHECK(gateway_pair(&gw, 2));
+    CHECK(gateway_pair_left(&gw) == 2);
     run(150);
     CHECK(gw.pairing);
     run(60);
-    CHECK(!gw.pairing && session_pair_state(&gw.session) == SESSION_PAIR_IDLE);
-    CHECK(logged("no device joined"));
-    CHECK(n_saved_zones == 0);
+    CHECK(!gw.pairing && gw.pair == GATEWAY_PAIR_CLOSED && session_pair_state(&gw.session) == SESSION_PAIR_IDLE);
+    CHECK(logged("no device joined") && !fw.pair_open);
+    CHECK(saved.n_devices == 0);
 }
 
 /* A TX the CC1312 keeps answering busy is given up after 8 s, while reading
@@ -542,10 +643,7 @@ static void a_busy_cc1312_is_retried_then_given_up(void)
 /* Before SNTP no time goes out, and no last_seen either. */
 static void without_a_clock_there_is_no_last_seen(void)
 {
-    struct gateway_identity id = identity(5000);
-    id.n_zones = 1;
-    id.zones[0] = (struct gateway_zone){.zone = 11, .setpoint = 1800};
-    memcpy(id.zones[0].owner, device(), 8);
+    struct gateway_identity id = identity_with_room(5000);
     start(&id);
     clock_set = false;
     run(3);
@@ -571,9 +669,9 @@ void run_gateway_tests(void)
     sends_nothing_past_a_floor_it_could_not_save();
     keeps_the_carrier_the_cc1312_retunes_to();
     publishes_a_report_for_home_assistant();
-    a_pair_command_ends_with_the_joiner_owning_its_zone();
+    a_paired_device_waits_for_a_room_then_takes_it();
+    rooms_and_devices_on_the_setup_page();
     a_join_under_way_outlasts_its_window();
-    a_device_paired_into_another_zone_leaves_its_old_one();
     a_pair_window_without_a_joiner_closes_at_its_end();
     a_busy_cc1312_is_retried_then_given_up();
     without_a_clock_there_is_no_last_seen();

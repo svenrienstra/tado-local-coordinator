@@ -79,9 +79,12 @@ struct session_ops {
      * h/<home>/z/<n>/act, ...) that decoded, with its Uri-Path. Called before
      * its 2.04 goes out; it must not call back into the session. */
     void (*on_report)(void *ctx, const uint8_t device[8], const char *path, const struct tado_report *r);
-    /* Optional. The joiner answered d/pair under our network key. It may call
-     * session_set_zone to give the new device a zone, so that its config
-     * request is answered. */
+    /* Optional. Each new CON request a device makes under our key, with its
+     * code and Uri-Path, and whether the session answers it: a
+     * d/<serial>/config GET from a device in no zone goes unanswered. Called
+     * before the answer goes out; it must not call back into the session. */
+    void (*on_request)(void *ctx, const uint8_t device[8], uint8_t code, const char *path, bool answered);
+    /* Optional. The joiner answered d/pair under our network key. */
     void (*on_joined)(void *ctx, const uint8_t device[8]);
 };
 

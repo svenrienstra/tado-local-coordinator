@@ -270,15 +270,18 @@ bool ha_device_discovery(char *topic, size_t tcap, char *payload, size_t pcap, c
     return done(&t) && done(&p);
 }
 
-bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, enum ha_entity e)
+bool ha_zone_discovery(char *topic, size_t tcap, char *payload, size_t pcap, unsigned zone, const char *name,
+                       enum ha_entity e)
 {
     if (e < HA_ZONE_TEMPERATURE || e > HA_ZONE_DEMAND)
         return false;
-    char uid[24], state[32], device[96];
+    char uid[24], state[32], device[160];
     snprintf(uid, sizeof uid, "tado_zone_%u", zone);
     ha_zone_state_topic(state, sizeof state, zone);
-    snprintf(device, sizeof device, "{\"identifiers\":[\"%s\"],\"name\":\"tado zone %u\",\"manufacturer\":\"tado\"}",
-             uid, zone);
+    int n = snprintf(device, sizeof device, "{\"identifiers\":[\"%s\"],\"name\":\"%s\",\"manufacturer\":\"tado\"}",
+                     uid, name);
+    if (n < 0 || (size_t)n >= sizeof device)
+        return false;
     struct out t = {topic, tcap, 0, false}, p = {payload, pcap, 0, false};
     put(&t, "homeassistant/sensor/%s/%s/config", uid, ENTITIES[e].key);
     put_sensor(&p, &ENTITIES[e], uid, state, device);

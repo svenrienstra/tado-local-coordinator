@@ -8,8 +8,8 @@ SHARED  := $(FW)/crc.c $(FW)/ccm.c $(FW)/mac.c $(FW)/hlframe.c
 # The CC1312's coordinator and host link, the peer in the host-link tests.
 PEER    := $(FW)/coordinator.c $(FW)/hostlink.c
 CORE    := core/coap.c core/lowpan.c core/reasm.c core/tado.c core/session.c core/hlc.c
-APP     := app/gwlink.c app/gateway.c app/ha.c
-TESTS   := test/test_main.c test/test_session.c test/test_hlc.c test/test_gateway.c test/test_ha.c test/fw_peer.c
+APP     := app/gwlink.c app/gateway.c app/ha.c app/install.c app/web.c
+TESTS   := test/test_main.c test/test_session.c test/test_hlc.c test/test_gateway.c test/test_ha.c test/test_web.c test/fw_peer.c
 FREEDO  := ../reference/freedo/tado/testdata
 
 HOST_CC     ?= cc

@@ -3,7 +3,8 @@
 The brain of the deployed coordinator (`../docs/PLAN.md` 4.2). It talks to the
 CC1312 over UART with the host link (`../docs/HOSTLINK.md`) and runs 6LoWPAN,
 CoAP and the tado resource model; it publishes device state over MQTT with
-Home Assistant discovery and takes the pair window from MQTT (setpoints: M3).
+Home Assistant discovery, and serves a setup page for pairing devices and
+putting them in rooms (setpoints: M3).
 
 ## Status
 
@@ -27,7 +28,7 @@ make test     # 400+ checks; needs ../reference/freedo (git submodule) for the r
 | `lowpan` | 6LoWPAN IPHC build/parse (RFC 6282), UDP/ICMPv6 checksums |
 | `reasm` | RFC 4944 fragment reassembly in fixed slots |
 | `tado` | device config, zone document, zone state with overlay, Block2 answers, `d/pair`, `auth/token`, `time`, Router Advertisement, 2.04/empty ACK, zone state write; report decoding |
-| `session` | the coordinator logic: serves the installation, pairs on command, keeps device overlays and ends them; hands decoded reports and the joined device to the gateway |
+| `session` | the coordinator logic: serves the installation, pairs on command, keeps device overlays and ends them; tells the gateway of each request (answered or not), decoded reports and the joined device |
 | `hlc` | the gateway's side of the host link: frames requests, parses replies and events |
 | `link.h` | TX requests and events as the session sees them, independent of the wire |
 
@@ -46,8 +47,10 @@ no frames itself.
 | File | What |
 |---|---|
 | `gwlink` | the host link over a byte stream: blocking requests (a `TX` returns the CC1312's handle, `HL_BUSY` retried every 100 ms for 8 s), events that arrive meanwhile queued with their own copy of the bytes |
-| `gateway` | configures the CC1312, and again whenever it rebooted (a `boot` line after our `CONFIG`, or a `TX` refused as not configured); frame counters in blocks of 65536, the floor in flash moved on before the CC1312 gets near it; the carrier the CC1312 retunes to; the pair command (`tado/gateway/pair/set`, a zone number), whose joiner becomes that zone's owner; reports out to MQTT |
-| `ha` | Home Assistant topics and payloads: retained state per device and zone, a discovery config per sensor once it has a value |
+| `gateway` | configures the CC1312, and again whenever it rebooted (a `boot` line after our `CONFIG`, or a `TX` refused as not configured); frame counters in blocks of 65536, the floor in flash moved on before the CC1312 gets near it; the carrier the CC1312 retunes to; rooms and joined devices: pair first, then put the device in a room, whose zone is served from then on (one device per room until M4); reports out to MQTT |
+| `install` | rooms and devices as they are kept in flash |
+| `web` | the setup page's JSON API (routes in `web.h`), form bodies, HTTP Basic |
+| `ha` | Home Assistant topics and payloads: retained state per device and zone (named after its room), a discovery config per sensor once it has a value |
 
 The ESP-IDF code in `esp/main/main.c` gives the gateway its platform: the UART,
 NVS, the clock (no `time` answer before SNTP set it), WiFi and MQTT. MQTT
@@ -69,6 +72,7 @@ CONFIG_TADO_WIFI_PASSWORD="..."
 CONFIG_TADO_MQTT_URI="mqtt://192.168.1.10"
 CONFIG_TADO_MQTT_USERNAME="..."
 CONFIG_TADO_MQTT_PASSWORD="..."
+CONFIG_TADO_WEB_PASSWORD="..."
 EOF
 idf.py set-target esp32s3   # once; reads sdkconfig.defaults and sdkconfig.secrets
 idf.py build flash monitor  # the board's "UART" USB port
@@ -84,7 +88,7 @@ already joined to the Java bench tool, flash its identity instead, before the
 first boot:
 
 ```
-python tools/identity_nvs.py ../../host/state/coordinator.properties identity.csv --zone 11=<owner EUI>
+python tools/identity_nvs.py ../../host/state/coordinator.properties identity.csv
 python -m esp_idf_nvs_partition_gen generate identity.csv identity.bin 0x10000
 esptool.py --chip esp32s3 write_flash 0x9000 identity.bin
 rm identity.csv identity.bin   # they hold the network key
@@ -94,9 +98,24 @@ NVS is not encrypted: anyone with the board can read the network key from
 flash. NVS is never erased by the firmware (a failed `nvs_flash_init` stops it
 instead), as erasing it would lose the key.
 
-Pair a device into zone 3: publish `3` to `tado/gateway/pair/set`, then
-long-press the device's button within 120 s. Progress goes to
-`tado/gateway/log`.
+### The setup page
+
+`http://<gateway address>/`, user `admin` (`CONFIG_TADO_WEB_USERNAME`) and
+`CONFIG_TADO_WEB_PASSWORD`; with no password set the page refuses everyone.
+No TLS (`../docs/PLAN.md` 3.3).
+
+As in the tado app, a device is paired first and then put in a room:
+
+1. **Add device** opens a 120 s pair window: long-press the device's button.
+2. The device joins and is listed under **No room**. It asks for its config
+   about once a minute and is marked "waiting for a room" until it has one.
+3. Add a room, and pick it in the device's room list. The gateway answers the
+   device's next config request with that room's zone.
+
+Moving a device that already took a room's config reaches it only at its
+next config read: forcing that (a config write or `d/reboot`) is M4. Progress
+also goes to `tado/gateway/log`; `tado/gateway/pair/set` opens a pair window
+too (any payload).
 
 ## Tests
 
@@ -108,15 +127,19 @@ long-press the device's button within 120 s. Progress goes to
   and parse, fragmented zone documents reassemble, corrupt frames fail the MIC.
 - `test/test_session.c`: the Java `JoinSessionTest` cases, one for one, plus
   what only the C session does (a pair window while serving, a refused
-  `d/pair`, reports and the joined device handed to the gateway, no `time`
-  before the clock is set).
+  `d/pair`, reports, requests and the joined device handed to the gateway, no
+  `time` before the clock is set).
 - `test/test_hlc.c`: the host-link client against the real CC1312 firmware
   (`coordinator.c` and `hostlink.c` built for the Mac with the stub radio of
   `test/fw_peer.c`), including a device report end to end: sealed frame in,
   `RX` event, the session's 2.04 out as a `TX` the firmware seals for the
   device.
 - `test/test_gateway.c`: the gateway against the same firmware over a byte
-  stream: configuring, reboots, counter blocks, the carrier, a pair command
-  through to the joiner owning its zone, and the sensor's report out as Home
+  stream: configuring, reboots, counter blocks, the carrier; pairing a device,
+  its config request unanswered until it is put in a room through the page's
+  API, then answered with that room's zone, and the rooms back after a
+  restart; rooms renamed and deleted; the sensor's report out as Home
   Assistant messages.
 - `test/test_ha.c`: discovery configs and state payloads byte for byte.
+- `test/test_web.c`: the installation's encoding, room names, form bodies and
+  HTTP Basic.
