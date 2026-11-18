@@ -14,8 +14,8 @@ SECTIONS
 {
     .resetVecs 0x0 : { KEEP(*(.resetVecs)) } > FLASH
 
-    /* The NoRTOS HwiP installs handlers in this RAM table (VTOR). */
-    .ramVecs (NOLOAD) : ALIGN(1024) { KEEP(*(.ramVecs)) } > SRAM
+    /* driverlib's IntRegister keeps its RAM vector table (VTOR) here. */
+    vtable_ram (NOLOAD) : ALIGN(256) { KEEP(*(vtable_ram)) } > SRAM
 
     .text : {
         *(.text) *(.text.*)

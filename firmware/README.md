@@ -62,8 +62,10 @@ traffic, timed on this radio with a `make SNIFF=1` build:
 - RX timestamp: the RF core dates a packet at its first preamble bit, so the
   frame ends `ts + (preamble 4 + sync 4 + 1 + len + 2) x 640` RAT ticks later. A
   frame reaches the main loop about 0.49 ms after its end.
-- Enhanced ACK: sent from the clear header before the MIC check, 0.55 ms after
-  the frame; the bridge's starts 0.35-0.45 ms after.
+- Enhanced ACK: sent from the clear header before the MIC check, 0.70 ms after
+  the frame; the bridge's starts 0.35-0.45 ms after. Posting it ends about
+  0.66 ms after the frame (0.49 ms to reach the main loop, then cancelling RX
+  and posting the chain), so an earlier start went out late.
 - Trains: wake-up frames every 3968 us (12.4 rendezvous units), the Data frame
   0.52 ms (broadcast) or 0.82 ms (unicast) after the last wake-up frame ends.
   A full train takes 1.05 s. An anchored train is 21 frames, rendezvous 248 to

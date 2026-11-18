@@ -16,7 +16,6 @@
 #include "platform.h"
 #include "rf_settings.h"
 
-#define RAT_PER_US         4u
 #define RAT_PER_BYTE       (8u * 20u * RAT_PER_US) /* 50 kbps */
 /* The Data frame starts this long after the last wake-up frame ends, as the
  * commercial bridge's (measured on our radio): 0.52 ms for a broadcast, a median
@@ -71,7 +70,9 @@ static volatile unsigned chain_tx;  /* TX commands in the current chain */
 static volatile bool rx_restart;
 static unsigned tx_checked;         /* TX commands of the chain checked for errors */
 
-/* RF command errors, counted by the callback and reported by radio_poll. */
+/* RF command errors, counted by the callback and reported by radio_poll.
+ * A chain the driver refused to take is reported as POST_FAILED. */
+#define POST_FAILED 0xffffu
 static volatile uint32_t rf_errors;
 static volatile uint16_t rf_error_status;
 static uint32_t rf_errors_reported;
@@ -214,14 +215,18 @@ static void abort_current(void)
         RF_cancelCmd(rf, old, 0);
 }
 
-/* Aborts the running RX and posts n TX commands followed by RX. */
-static void post_chain(unsigned n)
+/* Aborts the running RX and posts n TX commands followed by RX. False when
+ * the driver refused the chain: nothing runs then, and radio_poll posts RX
+ * again. */
+static bool post_chain(unsigned n)
 {
     for (unsigned i = 0; i < n; i++)
         tx_cmds[i].pNextOp = (rfc_radioOp_t *)(i + 1 < n ? (void *)&tx_cmds[i + 1] : (void *)&rx_cmd);
     rx_cmd.status = IDLE;
-    rx_restart = false;
     abort_current();
+    /* Only after the abort: the old chain's callbacks no longer count, so none
+     * can ask for a restart that would cut this chain off. */
+    rx_restart = false;
     chain_tx = n;
     tx_checked = 0;
     account_rx();
@@ -232,6 +237,14 @@ static void post_chain(unsigned n)
      * for CMD_PROP_TX, and LastCmdDone waits for the trailing RX to stop. */
     current = RF_postCmd(rf, head, RF_PriorityNormal, callback,
                          RF_EventRxEntryDone | RF_EventCmdDone | RF_EventLastCmdDone);
+    if (current < 0) {
+        chain_tx = 0; /* nothing pending: radio_busy() must not stick */
+        rf_error_status = POST_FAILED;
+        rf_errors++;
+        rx_restart = true;
+        return false;
+    }
+    return true;
 }
 
 static void set_tx(rfc_CMD_PROP_TX_t *cmd, const uint8_t *frame, size_t len, uint32_t start)
@@ -263,7 +276,7 @@ void radio_init(void)
     RF_runCmd(rf, (RF_Op *)&rf_cmd_fs, RF_PriorityNormal, NULL, 0);
     init_rx();
     current = RF_SCHEDULE_CMD_ERROR;
-    post_chain(0);
+    (void)post_chain(0);
 }
 
 void radio_set_channel(uint32_t khz)
@@ -275,7 +288,7 @@ void radio_set_channel(uint32_t khz)
     if (job == JOB_ON_AIR)
         job = JOB_FAILED;
     RF_runCmd(rf, (RF_Op *)&rf_cmd_fs, RF_PriorityNormal, NULL, 0);
-    post_chain(0);
+    (void)post_chain(0); /* a refusal is retried by radio_poll */
 }
 
 uint32_t radio_rat_now(void)
@@ -291,12 +304,11 @@ bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start)
         return false;
     memcpy(tx_frame, frame, len);
     set_tx(&tx_cmds[0], tx_frame, len, rat_start);
-    post_chain(1);
-    return true;
+    return post_chain(1);
 }
 
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t n_wake, uint32_t rat_start,
-                    const uint8_t *frame, size_t len, uint8_t token)
+                    bool broadcast, const uint8_t *frame, size_t len, uint8_t token)
 {
     if (job != JOB_NONE || tx_pending() || n_wake > MAC_TRAIN_FULL)
         return false;
@@ -305,14 +317,14 @@ bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t n_wake, ui
         mac_build_wakeup(wake_frames[i], seq, dst_short, mac_train_rendezvous((int)i, (int)n_wake));
         set_tx(&tx_cmds[i], wake_frames[i], MAC_WAKEUP_LEN, t + i * WAKE_STEP_RAT);
     }
-    bool broadcast = dst_short[0] == 0xff && dst_short[1] == 0xff;
     if (n_wake > 0)
         t += (n_wake - 1u) * WAKE_STEP_RAT + WAKE_AIR_RAT +
              (broadcast ? DATA_GAP_BROADCAST : DATA_GAP_UNICAST);
     memcpy(tx_frame, frame, len);
     set_tx(&tx_cmds[n_wake], tx_frame, len, t);
     job_token = token;
-    post_chain(n_wake + 1u);
+    if (!post_chain(n_wake + 1u))
+        return false;
     /* Only now: until post_chain the previous chain is current, and its events
      * would be read against this job's commands. */
     job = JOB_ON_AIR;
@@ -325,7 +337,7 @@ unsigned radio_abort_job(void)
     while (ran < chain_tx && tx_status(ran) > ACTIVE)
         ran++;
     job = JOB_NONE;
-    post_chain(0);
+    (void)post_chain(0);
     return ran;
 }
 
@@ -358,6 +370,7 @@ void radio_poll(struct coordinator *c)
         coord_on_rx(c, s->frame, s->len, s->rssi, s->rat_end, s->freq_offset);
         slot_tail++;
     }
-    if (rx_restart && job == JOB_NONE)
-        post_chain(0);
+    /* An ACK or beacon answer still waiting to go out keeps its chain. */
+    if (rx_restart && job == JOB_NONE && !tx_pending())
+        (void)post_chain(0);
 }

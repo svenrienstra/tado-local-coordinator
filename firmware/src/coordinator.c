@@ -8,7 +8,6 @@
 const uint8_t PAIRING_KEY[16] = {'t', 'a', 'd', 'o', ' ', 'p', 'a', 'i',
                                  'r', 'i', 'n', 'g', ' ', 'k', 'e', 'y'};
 
-
 /* TX flags (docs/HOSTLINK.md). */
 #define TXF_PAIRING_KEY 0x01
 #define TXF_BROADCAST   0x02
@@ -25,6 +24,13 @@ const uint8_t PAIRING_KEY[16] = {'t', 'a', 'd', 'o', ' ', 'p', 'a', 'i',
 #define RXF_ACKED       0x04
 
 static bool before(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
+
+/* Whether less than interval ms passed since stamp. Unlike before() on
+ * stamp + interval, a stamp left alone for weeks does not read as recent. */
+static bool within(uint32_t now, uint32_t stamp, uint32_t interval)
+{
+    return now - stamp < interval;
+}
 
 /* The RAT extended to 64 bits. Called from every main-loop pass, far more
  * often than the 32-bit RAT wraps. */
@@ -135,7 +141,7 @@ static bool pair_window_open(struct coordinator *c)
 static bool rate_ok(uint32_t *window_ms, unsigned *count, unsigned per_second)
 {
     uint32_t now = platform_ms();
-    if (!before(now, *window_ms + 1000u)) {
+    if (!within(now, *window_ms, 1000u)) {
         *window_ms = now;
         *count = 0;
     }
@@ -206,19 +212,36 @@ static void tx_done(struct coordinator *c, enum tx_result result)
     hostlink_event(&c->link, HL_EV_TX_DONE, ev, sizeof ev, NULL, 0);
 }
 
+/* Fails every queued job from index keep on, without sending it. */
+static void drop_queued(struct coordinator *c, size_t keep)
+{
+    while (c->queue_len > keep) {
+        struct tx_job *j = &c->queue[--c->queue_len];
+        uint8_t ev[2] = {j->handle, TX_RADIO_ERROR};
+        c->stats.jobs_failed++;
+        log_job(c, j->handle, "dropped");
+        hostlink_event(&c->link, HL_EV_TX_DONE, ev, sizeof ev, NULL, 0);
+    }
+}
+
 static enum hl_status do_config(struct coordinator *c, const uint8_t *p, size_t len)
 {
     if (len != 8 + 16 + 4 + 4 || memcmp(&p[5], MAC_TADO_EUI_SUFFIX, 3) != 0)
         return HL_BAD_ARG;
     if (!radio_supported())
         return HL_UNSUPPORTED;
+    /* Queued jobs were sealed under the old key and source EUI, and an ACK
+     * would now be matched against the new EUI: a new identity fails them all.
+     * A job on air stays first in the queue: the retune below aborts it and the
+     * radio reports the outcome, which may still be a sent frame. */
+    if (c->configured && (memcmp(c->eui, p, 8) != 0 || memcmp(c->network_key, &p[8], 16) != 0)) {
+        if (c->awaiting_ack)
+            tx_done(c, TX_RADIO_ERROR);
+        drop_queued(c, c->job_on_air ? 1u : 0u);
+    }
     memcpy(c->eui, p, 8);
     memcpy(c->network_key, &p[8], 16);
     c->counter = get32(&p[24]);
-    /* The retune aborts a job on air; the radio's late report of it then finds
-     * no job. A job waiting for its ACK times out as usual. */
-    if (c->job_on_air && !c->awaiting_ack)
-        tx_done(c, TX_RADIO_ERROR);
     c->channel_khz = get32(&p[28]);
     c->tune_khz = 0;
     c->tune_pending = c->tuned_once = false;
@@ -291,7 +314,7 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     v[12] = c->stats.acks_late;
     v[13] = c->stats.jobs_anchored;
     v[14] = c->stats.rx_duplicates;
-    for (size_t i = 0; i < 15; i++)
+    for (size_t i = 0; i < sizeof v / sizeof v[0]; i++)
         put32(&reply[4 * i], v[i]);
     *reply_len = sizeof v;
 }
@@ -427,7 +450,7 @@ static void log_signed(struct log_line *l, int32_t v)
 /* Signed microseconds, for a timing log line. */
 static void log_us(struct log_line *l, int32_t rat)
 {
-    log_signed(l, rat / (int32_t)(RAT_PER_MS / 1000u));
+    log_signed(l, rat / (int32_t)RAT_PER_US);
     log_str(l, " us");
 }
 
@@ -436,16 +459,16 @@ static bool send_ack(struct coordinator *c, uint8_t seq, const uint8_t dst[8], u
 {
     /* Phase: free-running timer in 320 us units, truncated to 16 bits. */
     uint8_t ack[MAC_ENH_ACK_LEN];
-    mac_build_enh_ack(ack, seq, dst, c->eui, (uint16_t)(rat_end / 1280u));
+    mac_build_enh_ack(ack, seq, dst, c->eui, (uint16_t)(rat_end / CSL_UNIT_RAT));
     uint32_t start = rat_end + ACK_DELAY_RAT;
-    uint32_t now = radio_rat_now();
-    int32_t slack = (int32_t)(start - now);
     if (!radio_send_at(ack, sizeof ack, start)) {
         answer_refused(c, "ack", seq);
         return false;
     }
     c->stats.acks_sent++;
-    if (slack < 0) {
+    /* Read after posting, which takes part of the slack itself. */
+    uint32_t now = radio_rat_now();
+    if ((int32_t)(start - now) < 0) {
         /* The radio sends it at once, maybe outside the device's window. */
         c->stats.acks_late++;
         struct log_line l = {.len = 0};
@@ -472,7 +495,7 @@ static bool repeated_unicast(struct coordinator *c, const struct mac_data *d)
         if (!e->valid || (oldest->valid && before(e->at_ms, oldest->at_ms)))
             oldest = e;
     }
-    if (slot && slot->seq == d->seq && before(now, slot->at_ms + DEDUP_WINDOW_MS))
+    if (slot && slot->seq == d->seq && within(now, slot->at_ms, DEDUP_WINDOW_MS))
         return true;
     if (slot == NULL)
         slot = oldest;
@@ -543,7 +566,7 @@ static void tune_note(struct coordinator *c, const uint8_t short_addr[2], int8_t
 static void tune_apply(struct coordinator *c)
 {
     if (!c->tune_pending || c->job_on_air || radio_busy() || pair_window_open(c) ||
-        (c->tuned_once && before(platform_ms(), c->tune_last_ms + TUNE_INTERVAL_MS)))
+        (c->tuned_once && within(platform_ms(), c->tune_last_ms, TUNE_INTERVAL_MS)))
         return;
     int32_t k = c->tune_khz + c->tune_step_khz;
     const int32_t max_khz = TUNE_MAX_HZ / 1000;
@@ -719,8 +742,8 @@ void coord_poll(struct coordinator *c)
         if (!j->anchored)
             j->start = now + CHAIN_LEAD_RAT;
         if (now + JOB_LEAD_RAT >= j->start &&
-            radio_send_job(j->dst_short, j->seq, j->wake_frames, (uint32_t)j->start, j->frame,
-                           j->len, j->handle)) {
+            radio_send_job(j->dst_short, j->seq, j->wake_frames, (uint32_t)j->start, !j->unicast,
+                           j->frame, j->len, j->handle)) {
             c->job_on_air = true;
             c->job_deadline_ms = platform_ms() + (uint32_t)((j->start - now) / RAT_PER_MS) +
                                  job_airtime_ms(j);

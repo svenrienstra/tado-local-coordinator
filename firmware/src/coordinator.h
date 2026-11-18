@@ -39,10 +39,12 @@ void radio_set_channel(uint32_t khz);
  * the radio is busy with a job or another frame; nothing is sent then. */
 bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start);
 /* Starts a job: wake_frames wake-up frames to dst_short carrying seq, the
- * first at RAT time rat_start, then the Data frame. Finishes with
- * coord_on_job_sent() carrying token. False when busy. */
+ * first at RAT time rat_start, then the Data frame (after the broadcast or
+ * the unicast gap). Finishes with coord_on_job_sent() carrying token. False
+ * when busy or when the radio would not take it. */
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frames,
-                    uint32_t rat_start, const uint8_t *frame, size_t len, uint8_t token);
+                    uint32_t rat_start, bool broadcast, const uint8_t *frame, size_t len,
+                    uint8_t token);
 /* Drops the running job, if any; no coord_on_job_sent() follows for it.
  * Returns how many of its TX commands (wake-up frames, then Data) had run. */
 unsigned radio_abort_job(void);
@@ -55,22 +57,22 @@ bool radio_supported(void);
 /* Frames the RF core received since boot with a good and with a bad CRC. */
 void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
 
-/* Answer delays after the end of the received frame, in RAT ticks. The
- * commercial beacon starts 2.4-7.4 ms after the request; the Enhanced ACK
- * 0-1 ms after the Data frame. */
 #define RAT_PER_MS            4000u
+#define RAT_PER_US            (RAT_PER_MS / 1000u)
+/* Answer delays after the end of the received frame, in RAT ticks. The
+ * commercial beacon starts 2.4-7.4 ms after the request. */
 #define BEACON_DELAY_RAT      (3u * RAT_PER_MS)
-/* Enhanced ACK start after the frame ends: the commercial bridge's is 0-1 ms.
- * The commercial bridge starts its ACK 0.35-0.45 ms after the frame (measured
- * on our radio). Ours cannot be that early: a frame reaches the main loop about
- * 0.49 ms after its end, and the ACK is posted from its clear header right
- * after, so 0.55 ms is the earliest start met every time. */
-#define ACK_DELAY_RAT         (RAT_PER_MS * 11u / 20u)
+/* The commercial bridge starts its Enhanced ACK 0.35-0.45 ms after the frame
+ * (measured on our radio). Ours cannot be that early: a frame reaches the main
+ * loop about 0.49 ms after its end, and posting the ACK (cancelling RX, posting
+ * the chain) ends about 0.66 ms after it (acks_late, 2026-11-18). 0.70 ms is
+ * met every time, so the ACK starts on schedule rather than late. */
+#define ACK_DELAY_RAT         (RAT_PER_MS * 7u / 10u)
 #define ACK_WAIT_MS           30u
 /* Wake-up frame spacing, 12.4 rendezvous units: the commercial bridge's,
  * measured on our radio (2026-11-17). Rounded up to whole ms for budgets. */
 #define WAKE_STEP_US          3968u
-#define WAKE_STEP_RAT         (WAKE_STEP_US * (RAT_PER_MS / 1000u))
+#define WAKE_STEP_RAT         (WAKE_STEP_US * RAT_PER_US)
 #define WAKE_STEP_MS          4u
 #define JOB_MARGIN_MS         50u /* chain setup, gap before Data, PHY overhead */
 /* A job reaches the radio this long before its first frame: posting it aborts
@@ -84,8 +86,8 @@ void radio_rx_counts(uint32_t *ok, uint32_t *crc_fail);
  * long, reaches it: 40 ms each side gives the bridge's 21 frames. The guard
  * grows with the anchor's age for clock drift. After a miss the next job goes
  * behind a full train; ANCHOR_MISS_LIMIT misses drop the anchor. */
-#define CSL_PERIOD_RAT        (1000u * RAT_PER_MS)
-#define CSL_UNIT_RAT          1280u /* 320 us: phase and rendezvous unit */
+#define CSL_UNIT_RAT          (320u * RAT_PER_US) /* phase and rendezvous unit */
+#define CSL_PERIOD_RAT        (MAC_CSL_PERIOD * CSL_UNIT_RAT)
 #define ANCHOR_GUARD_RAT      (40u * RAT_PER_MS)
 #define ANCHOR_GUARD_PPM      30u
 #define ANCHOR_GUARD_MAX_RAT  (CSL_PERIOD_RAT / 2u)

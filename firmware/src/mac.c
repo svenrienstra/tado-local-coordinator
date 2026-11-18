@@ -10,8 +10,6 @@
 #define FCF_DATA              0x69, 0xec
 #define FCF_DATA_PENDING      0x79, 0xec
 #define FCF_BCAST             0x49, 0xe8
-
-const uint8_t MAC_TADO_EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 #define FCF_BCAST_PENDING     0x59, 0xe8
 #define FCF_BEACON_REQ        0x0b, 0xe8
 #define FCF_ENH_BEACON        0x18, 0xec
@@ -26,6 +24,8 @@ const uint8_t MAC_TADO_EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 static const uint8_t ie_rendezvous[2] = {0x82, 0x0e};
 static const uint8_t ie_csl[2] = {0x04, 0x0d};
 static const uint8_t ie_term[2] = {0x80, 0x3f};
+
+const uint8_t MAC_TADO_EUI_SUFFIX[3] = {0xc5, 0x1b, 0x00};
 
 static bool fcf_is(const uint8_t *f, uint8_t a, uint8_t b) { return f[0] == a && f[1] == b; }
 

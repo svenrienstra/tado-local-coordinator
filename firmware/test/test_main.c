@@ -85,6 +85,8 @@ static uint16_t job_wake_frames;
 static uint8_t job_short[2];
 static uint8_t job_token; /* of the last job started, as the radio reports it */
 static bool radio_refuses; /* radio_send_at refuses, as during a job */
+static bool job_broadcast; /* the last job's Data gap */
+static uint32_t post_rat; /* RAT ticks radio_send_at takes to post a frame */
 
 uint32_t platform_ms(void) { return now_ms; }
 uint32_t radio_rat_now(void) { return now_rat; }
@@ -99,14 +101,17 @@ bool radio_send_at(const uint8_t *frame, size_t len, uint32_t rat_start)
     sent_len = len;
     sent_at = rat_start;
     sends++;
+    now_rat += post_rat;
     return true;
 }
 
 static uint32_t job_start; /* RAT time of the last job's first frame */
 bool radio_send_job(const uint8_t dst_short[2], uint8_t seq, uint16_t wake_frames,
-                    uint32_t rat_start, const uint8_t *frame, size_t len, uint8_t token)
+                    uint32_t rat_start, bool broadcast, const uint8_t *frame, size_t len,
+                    uint8_t token)
 {
     (void)seq;
+    job_broadcast = broadcast;
     job_start = rat_start;
     job_token = token;
     memcpy(job_short, dst_short, 2);
@@ -147,6 +152,7 @@ static void reset_stubs(void)
     sends = jobs = job_aborts = 0;
     radio_refuses = false;
     radio_on_air = false;
+    post_rat = 0;
 }
 
 /* Finds the n-th frame of a given type in host_out; returns its payload. */
@@ -549,7 +555,7 @@ static void test_coordinator_tx(void)
 
     coord_poll(&c);
     CHECK(jobs == 1 && job_wake_frames == MAC_TRAIN_FULL && job_short[0] == joiner[1] &&
-          job_short[1] == joiner[0]);
+          job_short[1] == joiner[0] && !job_broadcast);
     CHECK_VEC(sent_frame, sent_len, "pair.frame");
 
     /* The valve's Enhanced ACK for seq 0x30 closes the job. */
@@ -752,9 +758,82 @@ static void test_coordinator_tune(void)
     }
     CHECK(channel_khz == 868300 + TUNE_MAX_HZ / 1000);
 
+    /* After 25 days without a retune (2^31 ms), the interval does not hold
+     * one back: the stamp is old, not in the future. */
+    now_ms += 0x80000000u + 1000u;
+    frames_with_offset(&c, a, 16, -26);
+    coord_poll(&c);
+    CHECK(channel_khz == 868300 + TUNE_MAX_HZ / 1000 - 10);
+
     /* CONFIG starts over from its own frequency. */
     config_request(&c, 0x11, 0);
     CHECK(channel_khz == 868300 && c.tune_khz == 0);
+}
+
+/* A CONFIG with another key or EUI fails the jobs sealed under the old one;
+ * the broadcast gap follows the job's kind, not its short address. */
+static void test_coordinator_new_identity(void)
+{
+    static struct coordinator c;
+    const struct vec *coap = V("pair.coap");
+    const uint8_t *ev;
+    size_t len;
+    coord_init(&c);
+    now_ms = 0;
+    configure(&c, 0x100);
+
+    /* A device whose short address reads ff ff still gets the unicast gap. */
+    uint8_t tx[1 + 8 + 128];
+    tx[0] = 1 << 4; /* network key, unicast, full train */
+    static const uint8_t ffff[8] = {0xff, 0xff, 0x01, 0x02, 0x03, 0xc5, 0x1b, 0x00};
+    memcpy(&tx[1], ffff, 8);
+    memcpy(&tx[9], coap->data, coap->len);
+    size_t tx_len = 9 + coap->len;
+    reset_stubs();
+    host_request(&c, 1, HL_TX, tx, tx_len);
+    host_request(&c, 2, HL_TX, tx, tx_len);
+    host_request(&c, 3, HL_TX, tx, tx_len);
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_short[0] == 0xff && job_short[1] == 0xff && !job_broadcast);
+    uint8_t on_air = c.queue[0].handle;
+
+    /* The same identity keeps the queue. */
+    config_request(&c, 4, 0x200);
+    CHECK(c.queue_len == 3 && host_frame(HL_EV_TX_DONE, 0, &len) == NULL);
+
+    /* A new key: the two queued jobs fail at once, the one on air when the
+     * radio reports it. */
+    uint8_t cfg[32];
+    memcpy(cfg, V("in.coord_eui")->data, 8);
+    memset(&cfg[8], 0x42, 16);
+    memset(&cfg[24], 0, 4);
+    uint32_t khz = 868300;
+    memcpy(&cfg[28], &khz, 4);
+    host_request(&c, 5, HL_CONFIG, cfg, sizeof cfg);
+    CHECK(c.queue_len == 1 && c.queue[0].handle == on_air);
+    ev = host_frame(HL_EV_TX_DONE, 0, &len);
+    CHECK(ev && ev[0] != on_air && ev[1] == TX_RADIO_ERROR);
+    ev = host_frame(HL_EV_TX_DONE, 1, &len);
+    CHECK(ev && ev[0] != on_air && ev[1] == TX_RADIO_ERROR);
+    coord_on_job_sent(&c, job_token, false);
+    ev = host_frame(HL_EV_TX_DONE, 2, &len);
+    CHECK(ev && ev[0] == on_air && c.queue_len == 0);
+
+    /* A broadcast goes with the broadcast gap. */
+    reset_stubs();
+    tx[0] = 0x02 | 1 << 4; /* broadcast, full train */
+    host_request(&c, 6, HL_TX, tx, tx_len);
+    coord_poll(&c);
+    CHECK(jobs == 1 && job_broadcast);
+
+    /* A Data frame the radio finished just before a CONFIG is not failed: the
+     * job is reported as sent. */
+    reset_stubs();
+    uint8_t bcast = c.queue[0].handle;
+    host_request(&c, 7, HL_CONFIG, cfg, sizeof cfg);
+    coord_on_job_sent(&c, job_token, true);
+    ev = host_frame(HL_EV_TX_DONE, 0, &len);
+    CHECK(ev && ev[0] == bcast && ev[1] == TX_SENT);
 }
 
 static void test_coordinator_job_recovery(void)
@@ -774,8 +853,8 @@ static void test_coordinator_job_recovery(void)
     memcpy(&tx[9], coap->data, coap->len);
     size_t tx_len = 9 + coap->len;
 
-    /* A CONFIG while a job is on air aborts it: TX_DONE radio error at once,
-     * the radio's late failure report adds nothing, and the next job goes. */
+    /* A CONFIG while a job is on air retunes, which aborts it: the radio
+     * reports the failure, and the next job goes. */
     reset_stubs();
     host_request(&c, 1, HL_TX, tx, tx_len);
     host_request(&c, 2, HL_TX, tx, tx_len);
@@ -783,11 +862,13 @@ static void test_coordinator_job_recovery(void)
     CHECK(jobs == 1);
     uint8_t first = host_frame(HL_TX | HL_REPLY_FLAG, 0, &len)[1];
     config_request(&c, 3, 0x200);
+    CHECK(host_frame(HL_EV_TX_DONE, 0, &len) == NULL);
+    coord_on_job_sent(&c, job_token, false);
     ev = host_frame(HL_EV_TX_DONE, 0, &len);
     CHECK(ev && ev[0] == first && ev[1] == TX_RADIO_ERROR);
-    coord_on_job_sent(&c, job_token, false);
     coord_poll(&c);
     CHECK(host_frame(HL_EV_TX_DONE, 1, &len) == NULL && jobs == 2);
+
 
     /* The radio never reports the job: still on air through its full train,
      * failed and dropped from the radio once that is well over. */
@@ -948,6 +1029,13 @@ static void test_stats_and_log(void)
     CHECK(log_is(0, late));
     CHECK(stat(&c, S_ACKS) == 2 && stat(&c, S_ACKS_LATE) == 1);
 
+    /* On time when handed over, late once posted: posting takes its share. */
+    reset_stubs();
+    now_rat = 9000 + ACK_DELAY_RAT - 40;
+    post_rat = 200;
+    coord_on_rx(&c, f, n, -50, 9000, 0);
+    CHECK(stat(&c, S_ACKS) == 3 && stat(&c, S_ACKS_LATE) == 2);
+
     /* Jobs: one acked, one with no ACK, one the watchdog ends. */
     uint8_t tx[1 + 8 + sizeof pkt];
     tx[0] = 0;
@@ -1017,6 +1105,7 @@ int main(int argc, char **argv)
     test_coordinator_tx();
     test_coordinator_anchor();
     test_coordinator_tune();
+    test_coordinator_new_identity();
     test_coordinator_job_recovery();
     test_stats_and_log();
     printf("%d checks, %d failures\n", checks, failures);

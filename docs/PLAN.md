@@ -63,8 +63,9 @@ CSL timing cannot survive a UART round-trip through the ESP. Reference timings,
 measured on our CC1312 against the commercial bridge (2026-11-17, 154 trains
 and 286 ACKs; `firmware/README.md` "On air"):
 
-- Enhanced-ACK starts **0.35-0.45 ms after the Data frame ends** (ours: 0.55 ms,
-  the earliest our 0.49 ms receive latency allows).
+- Enhanced-ACK starts **0.35-0.45 ms after the Data frame ends** (ours: 0.70 ms;
+  the frame reaches our main loop 0.49 ms after its end and the ACK is posted
+  by about 0.66 ms).
 - Data frame **0.52 ms (broadcast) or a median 0.82 ms (unicast) after the last
   wake-up frame ends**. freedo's "9 to 24 ms after the last wake-up frame
   (median 12 ms)" is wrong; a train built on it wakes a device 16-24 ms early
