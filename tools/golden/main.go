@@ -77,6 +77,24 @@ func main() {
 	raPT := tado.WrapBroadcastPayload(ra, 0x0000) // counter high 0
 	put("ra.frame_network_pending", must(tado.BuildBroadcastPending(networkKey, 0x40, coordEUI, 0x0200, 0x04, raPT)))
 	put("ra.frame_pairing", must(tado.BuildBroadcast(pairingKey, 0x41, coordEUI, 0x0201, 0x04, raPT)))
+
+	// Zone state writes (PUT z/s?id=11) for home and away, and the boost: the
+	// tests compare their payload, the z/s block.
+	sp := func(c tado.SetpointCoAP) []byte {
+		c.ID, c.MID, c.Token, c.SrcEUI, c.DstEUI = 11, 0x0606, []byte{0x06}, coordEUI, joinerEUI
+		return must(tado.BuildSetpointCoAP(c))
+	}
+	put("zone.away_warm", sp(tado.SetpointCoAP{Home: false, SchedC: 20, AwayC: 15, NewOverlay: true}))
+	put("zone.away_off", sp(tado.SetpointCoAP{Home: false, SchedC: 20, NewOverlay: true}))
+	put("zone.home_again", sp(tado.SetpointCoAP{Home: true, SchedC: 20, NewOverlay: true}))
+	put("zone.away_manual", sp(tado.SetpointCoAP{Home: false, SchedC: 20, AwayC: 15, Overlay: 2, Setpoint: 21}))
+	boost := func(c tado.BoostCoAP) []byte {
+		c.ID, c.MID, c.Token, c.SrcEUI, c.DstEUI = 11, 0x0707, []byte{0x07}, coordEUI, joinerEUI
+		return must(tado.BuildBoostCoAP(c))
+	}
+	put("zone.boost_on", boost(tado.BoostCoAP{Enabled: true, Home: true, SchedC: 20, NewOverlay: true}))
+	put("zone.boost_cancel", boost(tado.BoostCoAP{Enabled: false, Home: true, SchedC: 20, NewOverlay: true}))
+	put("zone.boost_away", boost(tado.BoostCoAP{Enabled: true, Home: false, SchedC: 20, NewOverlay: true}))
 }
 
 func put(name string, b []byte) { fmt.Printf("%s %s\n", name, hex.EncodeToString(b)) }

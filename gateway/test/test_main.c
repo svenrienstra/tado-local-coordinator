@@ -322,6 +322,40 @@ static void test_tado_documents(void)
     CHECK(!tado_report_decode(past, sizeof past, &r));
 }
 
+/* The z/s block of freedo's zone writes (home, away, boost), byte for byte. */
+static void check_block(const char *name, const struct tado_zone_block *b)
+{
+    const struct vec *v = V(name);
+    struct lowpan_datagram d;
+    struct coap_msg m;
+    CHECK(lowpan_parse(v->data, v->len, V("in.coord_eui")->data, V("in.joiner_eui")->data, &d) &&
+          coap_decode(d.payload, d.payload_len, &m));
+    uint8_t out[64];
+    size_t n = tado_zone_block(out, sizeof out, b);
+    CHECK_BYTES(out, n, m.payload, m.payload_len);
+}
+
+static void test_tado_zone_blocks_as_freedo_writes_them(void)
+{
+    /* Away at an away temperature, away and off, and home again: target changes. */
+    check_block("zone.away_warm", &(struct tado_zone_block){.away = true, .on = true, .setpoint = 1500, .marker = true});
+    check_block("zone.away_off", &(struct tado_zone_block){.away = true, .marker = true});
+    check_block("zone.home_again", &(struct tado_zone_block){.on = true, .setpoint = 2000, .marker = true});
+    /* A manual overlay restated at the switch: no marker. */
+    check_block("zone.away_manual", &(struct tado_zone_block){.away = true, .on = true, .setpoint = 1500,
+                                                              .overlay = TADO_OVERLAY_MANUAL, .overlay_on = true,
+                                                              .overlay_setpoint = 2100});
+    /* The boost: a timer overlay at 25 C, and its cancel. */
+    check_block("zone.boost_on", &(struct tado_zone_block){.on = true, .setpoint = 2000, .overlay = TADO_OVERLAY_TIMER,
+                                                           .overlay_on = true, .overlay_setpoint = 2500, .marker = true});
+    check_block("zone.boost_cancel", &(struct tado_zone_block){.on = true, .setpoint = 2000, .marker = true});
+    check_block("zone.boost_away", &(struct tado_zone_block){.away = true, .overlay = TADO_OVERLAY_TIMER,
+                                                             .overlay_on = true, .overlay_setpoint = 2500,
+                                                             .marker = true});
+    uint8_t out[64];
+    CHECK(tado_zone_block(out, 20, &(struct tado_zone_block){.on = true, .setpoint = 2000}) == 0);
+}
+
 static void test_tado_block_answers(void)
 {
     uint8_t doc[512], out[256];
@@ -531,6 +565,7 @@ int main(int argc, char **argv)
     test_reasm_one_fragment_holds_it_all();
     test_tado_documents();
     test_tado_block_answers();
+    test_tado_zone_blocks_as_freedo_writes_them();
     test_tado_resources();
     test_tado_reports();
     run_session_tests();

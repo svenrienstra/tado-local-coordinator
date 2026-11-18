@@ -108,23 +108,36 @@ size_t tado_zone_with_owner(uint8_t *out, size_t cap, const uint8_t owner[8])
     return done(&o);
 }
 
-size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t overlay)
+size_t tado_zone_block(uint8_t *out, size_t cap, const struct tado_zone_block *b)
 {
     struct out o = {.p = out, .cap = cap};
-    tlv_u8(&o, 0x6160, 1); /* home */
+    tlv_u8(&o, 0x6160, b->away ? 2 : 1);
     tlv_u8(&o, 0x6180, 0);
     tlv_u8(&o, 0x6020, 1); /* heating */
-    tlv_u8(&o, 0x61e0, 1); /* on */
-    tlv_u16(&o, 0x6200, setpoint);
-    if (overlay >= 0) {
-        tlv_u8(&o, 0x6240, TADO_OVERLAY_MANUAL);
-        tlv_u8(&o, 0x6260, 1); /* on */
-        tlv_u16(&o, 0x6280, (uint16_t)overlay);
-    } else {
-        tlv_u8(&o, 0x6240, 0);
+    tlv_u8(&o, 0x61e0, b->on);
+    if (b->on)
+        tlv_u16(&o, 0x6200, b->setpoint);
+    tlv_u8(&o, 0x6240, b->overlay);
+    if (b->overlay) {
+        tlv_u8(&o, 0x6260, b->overlay_on);
+        if (b->overlay_on)
+            tlv_u16(&o, 0x6280, b->overlay_setpoint);
     }
     tlv_u8(&o, 0x62e0, 0); /* window closed */
+    if (b->marker)
+        tlv_u16(&o, 0x6440, 1);
     return done(&o);
+}
+
+size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t overlay)
+{
+    struct tado_zone_block b = {.on = true, .setpoint = setpoint};
+    if (overlay >= 0) {
+        b.overlay = TADO_OVERLAY_MANUAL;
+        b.overlay_on = true;
+        b.overlay_setpoint = (uint16_t)overlay;
+    }
+    return tado_zone_block(out, cap, &b);
 }
 
 bool tado_report_decode(const uint8_t *body, size_t len, struct tado_report *r)

@@ -21,6 +21,7 @@
 #define TADO_ROLE_MEMBER 0x05
 /* 6240: 0 no overlay, 1 until the next automatic change, 2 manual, 3 timer. */
 #define TADO_OVERLAY_MANUAL 2
+#define TADO_OVERLAY_TIMER  3
 /* 64-byte blocks: a 128-byte one does not fit one frame (97 bytes of packet). */
 #define TADO_MAX_SZX 2
 /* The source port of the bridge's own requests to a device. */
@@ -41,10 +42,25 @@ size_t tado_device_config(uint8_t *out, size_t cap, uint32_t home_id, const stru
  * freedo's PID defaults and open-window detection on. */
 size_t tado_zone_with_owner(uint8_t *out, size_t cap, const uint8_t owner[8]);
 
-/* A zone's state as a device reads it (GET h/<home>/z/<n>/s) and as the
- * coordinator writes it (PUT z/s?id=<n>): at home, heating, on, setpoint in
- * centi-degrees C, window closed. With overlay >= 0 a manual overlay at that
- * setpoint; without (-1), 6240=0, which ends one the device holds. */
+/* A heating zone's state as a device reads it (GET h/<home>/z/<n>/s) and as
+ * the coordinator writes it (PUT z/s?id=<n>), in the captured tag order
+ * (freedo PROTOCOL.md "Setpoint write path"):
+ *   6160 6180 6020 61e0 [6200] 6240 [6260] [6280] 62e0 [6440]
+ * Window closed (62e0=0). */
+struct tado_zone_block {
+    bool away;                 /* 6160: 1 home, 2 away (the whole home) */
+    bool on;                   /* 61e0; 6200 only when on */
+    uint16_t setpoint;         /* 6200: what the zone follows without an overlay, centi-C */
+    uint8_t overlay;           /* 6240: 0 none, TADO_OVERLAY_MANUAL, TADO_OVERLAY_TIMER */
+    bool overlay_on;           /* 6260, with an overlay */
+    uint16_t overlay_setpoint; /* 6280, with an overlay that is on */
+    bool marker;               /* 6440=0001: the write starts or ends an overlay, or changes the target */
+};
+size_t tado_zone_block(uint8_t *out, size_t cap, const struct tado_zone_block *b);
+
+/* At home and on at setpoint (centi-degrees C). With overlay >= 0 a manual
+ * overlay at that setpoint; without (-1), 6240=0, which ends one the device
+ * holds. */
 size_t tado_zone_state(uint8_t *out, size_t cap, uint16_t setpoint, int32_t overlay);
 
 /* coap://[fe80:0:0:0:..]/z/ for the device; false when it does not fit cap. */
