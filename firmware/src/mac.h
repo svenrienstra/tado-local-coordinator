@@ -62,6 +62,10 @@ bool mac_parse_beacon_request(const uint8_t *frame, size_t len, const uint8_t ke
 void mac_build_beacon_request(uint8_t out[MAC_BEACON_REQ_LEN], const uint8_t key[16], uint8_t seq,
                               const uint8_t src[8], uint32_t counter);
 
+/* Verifies the Enhanced Beacon the coordinator answers with (device side). */
+bool mac_parse_enh_beacon(const uint8_t *frame, size_t len, const uint8_t key[16],
+                          uint8_t dst[8], uint8_t src[8], uint8_t *seq, uint32_t *counter);
+
 /* Seal a packet into a Data frame. Return the frame length, or 0 when the
  * packet does not fit. */
 size_t mac_seal_unicast(uint8_t out[MAC_MAX_FRAME], const uint8_t key[16], bool pending,

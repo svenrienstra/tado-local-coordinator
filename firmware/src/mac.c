@@ -166,6 +166,28 @@ void mac_build_beacon_request(uint8_t out[MAC_BEACON_REQ_LEN], const uint8_t key
     seal(out, 23, key); /* FCS into [21..22], MIC appended -> MAC_BEACON_REQ_LEN */
 }
 
+#define ENH_BEACON_PT_LEN (MAC_ENH_BEACON_LEN - MAC_HEADER_LEN - CCM_MIC_LEN)
+
+/* The device side: verifies the Enhanced Beacon the coordinator answers with.
+ * dst is in the clear header; src runs from the clear header into the sealed
+ * part, with the counter after the security control. Symmetric to
+ * mac_build_enh_beacon. */
+bool mac_parse_enh_beacon(const uint8_t *f, size_t len, const uint8_t key[16],
+                          uint8_t dst[8], uint8_t src[8], uint8_t *seq, uint32_t *counter)
+{
+    uint8_t pt[ENH_BEACON_PT_LEN];
+    if (len != MAC_ENH_BEACON_LEN || !fcf_is(f, FCF_ENH_BEACON))
+        return false;
+    if (open_frame(f, len, key, pt) != ENH_BEACON_PT_LEN)
+        return false;
+    *seq = f[2];
+    memcpy(dst, &f[5], 8);
+    memcpy(src, &f[13], 3); /* src[0..2] clear; src[3..7] sealed */
+    memcpy(&src[3], pt, 5);
+    *counter = get32(&pt[6]); /* pt: src[3..7](5) sec_ctrl(1) counter(4) fcs(2) */
+    return true;
+}
+
 bool mac_parse_beacon_request(const uint8_t *f, size_t len, const uint8_t key[16],
                               uint8_t *seq, uint8_t src[8], uint32_t *counter)
 {

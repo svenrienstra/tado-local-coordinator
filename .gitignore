@@ -31,3 +31,4 @@ gateway/esp/sdkconfig
 gateway/esp/sdkconfig.old
 gateway/esp/sdkconfig.secrets
 gateway/esp/managed_components/
+probe/build/
