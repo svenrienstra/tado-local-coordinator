@@ -150,6 +150,11 @@ static void test_beacon_exchange(void)
     CHECK(!mac_parse_beacon_request(req->data, req->len, V("in.network_key")->data, &seq, src,
                                     &counter));
 
+    /* The joiner side rebuilds the same real frame byte for byte. */
+    uint8_t br[MAC_BEACON_REQ_LEN];
+    mac_build_beacon_request(br, PAIRING_KEY, seq, src, counter);
+    CHECK((size_t)req->len == sizeof br && memcmp(br, req->data, sizeof br) == 0);
+
     uint8_t eb[MAC_ENH_BEACON_LEN];
     mac_build_enh_beacon(eb, PAIRING_KEY, 0x59, V("in.joiner_eui")->data, V("in.coord_eui")->data,
                          13537);

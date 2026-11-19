@@ -147,6 +147,25 @@ void mac_build_enh_beacon(uint8_t out[MAC_ENH_BEACON_LEN], const uint8_t key[16]
     seal(out, 28, key);
 }
 
+/* The device side of the join: the Enhanced Beacon Request a joiner broadcasts.
+ * Symmetric to mac_parse_beacon_request; dst is the broadcast PAN and short
+ * address, the source EUI runs into the sealed part with the counter and the
+ * beacon-request command, and seal() fills the FCS and the MIC. */
+void mac_build_beacon_request(uint8_t out[MAC_BEACON_REQ_LEN], const uint8_t key[16], uint8_t seq,
+                              const uint8_t src[8], uint32_t counter)
+{
+    static const uint8_t fcf[2] = {FCF_BEACON_REQ};
+    memcpy(out, fcf, 2);
+    out[2] = seq;
+    put16(&out[3], 0xffff); /* broadcast PAN */
+    put16(&out[5], 0xffff); /* broadcast short address */
+    memcpy(&out[7], src, 8);
+    out[15] = MAC_SEC_CTRL;
+    put32(&out[16], counter);
+    out[20] = MAC_CMD_BEACON_REQ;
+    seal(out, 23, key); /* FCS into [21..22], MIC appended -> MAC_BEACON_REQ_LEN */
+}
+
 bool mac_parse_beacon_request(const uint8_t *f, size_t len, const uint8_t key[16],
                               uint8_t *seq, uint8_t src[8], uint32_t *counter)
 {
