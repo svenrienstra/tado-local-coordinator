@@ -89,8 +89,9 @@ chip built for it.
 | `gateway/`    | ESP32-S3 gateway    | C        | tado protocol, rooms, MQTT, setup page; ESP-IDF build in `gateway/esp` |
 | `host/`       | Java bench tool     | Java     | ran M-1 on a Mac; reference for the gateway |
 | `tools/`      | test vectors, sniffing, traces | Go, Python | `tools/golden` builds the vectors from freedo; `tools/trace` turns host-link captures into redacted text traces |
+| `probe/`      | join probe          | C        | a throwaway device-role build to read a coordinator's `d/pair`; `docs/PROBE.md` |
 | `reference/`  | specs & oracles     | -        | freedo, as a git submodule |
-| `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec `docs/JOIN.md`, wiring `docs/WIRING.md` |
+| `docs/`       | plan & design       | -        | start at `docs/PLAN.md`; join spec `docs/JOIN.md`, join probe `docs/PROBE.md`, wiring `docs/WIRING.md` |
 
 ## Legal
 
