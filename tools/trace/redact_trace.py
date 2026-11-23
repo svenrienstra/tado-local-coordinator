@@ -63,6 +63,10 @@ def iid_text(eui):
 
 class Redactor:
     def __init__(self, device, coordinator, serial, home, key):
+        # ETags are hashes over the served documents, which hold the real home
+        # id; with the document format known, an ETag brute-forces back to it.
+        # Relabel each distinct one, keeping which requests carry the same ETag.
+        self.etags = {}
         # (real, invented, whether it is hex for bytes)
         self.pairs = []
         for real, fake in ((device, FAKE_DEVICE), (coordinator, FAKE_COORDINATOR)):
@@ -104,8 +108,19 @@ class Redactor:
                 b = b.replace(bytes.fromhex(real), bytes.fromhex(fake))
         return b
 
+    def etag(self, b):
+        h = b.hex()
+        if h not in self.etags:
+            self.etags[h] = "<etag %d>" % (len(self.etags) + 1)
+        return self.etags[h]
+
     def leaks(self, text):
-        return sorted(s for s in self.secrets if s and s in text.lower())
+        found = sorted(s for s in self.secrets if s and s in text.lower())
+        # A raw ETag (or If-Match) hash left unlabelled: it is derived from the
+        # real home id, so it must not reach the output as hex.
+        if re.search(r"(?:ETag|If-Match) [0-9a-f]{4,}", text):
+            found.append("an unlabelled ETag")
+        return found
 
 
 class Reader:
@@ -306,8 +321,8 @@ class Trace:
                 parts.append("%s %d/%d/%d" % (name, *block))
             elif n == 2048:
                 parts.append("Session <%d bytes>" % len(v))
-            elif n in (4,):
-                parts.append("%s %s" % (name, v.hex()))
+            elif n in (1, 4):  # If-Match, ETag: hashes over the real documents
+                parts.append("%s %s" % (name, self.red.etag(v)))
             else:
                 parts.append("%s %d" % (name, uint(v)))
         if ports and ports != (61616, 61616):
