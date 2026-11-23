@@ -18,10 +18,13 @@ answers are the device's, decoded with freedo's tag tables (`PROTOCOL.md`).
 
 - `PUT d/<serial>/fw/state` after joining, fragmented over two frames.
 - `PUT z/p?lid=11` with `4060` (temperature, centi-C), `40a0` (demand) and
-  `0135` (humidity, 0.1 %), **twice per update with two MIDs**: not a
-  retransmission.
-- `GET d/<serial>/config` about once a minute, retried under one MID, while
-  unanswered.
+  `0135` (humidity, 0.1 %). **Before a config is served it repeats one MID
+  many times**, even when every copy is ACKed; once configured, a pair under
+  two MIDs is rare (1 of 86 updates in our trace). (An earlier note said
+  "twice per update with two MIDs"; corrected 2026-11-23 against the trace,
+  freedo #7.)
+- `GET d/<serial>/config` while unanswered, retried under one MID, with a new
+  request only about every 3 minutes.
 - `GET time` after joining.
 - A Router Solicitation every 3 s once it has heard no Router Advertisement
   for about 20 minutes; it then stops reporting. The host sends an RA every
