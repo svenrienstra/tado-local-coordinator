@@ -27,6 +27,7 @@ public final class HostLink implements Closeable, Radio {
     public static final int PAIR_WINDOW = 0x03;
     public static final int TX = 0x04;
     public static final int STATS = 0x05;
+    public static final int SEND_BEACON = 0x06; // PROBE firmware only
     static final int REPLY_FLAG = 0x80;
     static final int EVENT_MASK = 0xc0;
     /** TX flag bit 1; derived from the request having no destination. */
@@ -106,6 +107,11 @@ public final class HostLink implements Closeable, Radio {
 
     public void pairWindow(int seconds) throws IOException {
         request(PAIR_WINDOW, ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort((short) seconds).array());
+    }
+
+    /** Broadcasts an Enhanced Beacon Request, as a joiner does. PROBE firmware only. */
+    public void sendBeacon() throws IOException {
+        request(SEND_BEACON, new byte[0]);
     }
 
     @Override

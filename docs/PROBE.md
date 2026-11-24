@@ -88,13 +88,43 @@ commercial bridge is the main prize regardless of the tag.
 - Optional second trial with the bridge's **internet disconnected**, to see
   whether button-pairing provisions at all offline.
 
-## Status
+## How it was run
 
-- **Built and host-tested, no hardware** (`probe/`, `make test`, 19 checks):
-  the device role `joiner.{c,h}`, the shared `mac_build_beacon_request` and
-  `mac_parse_enh_beacon`, validated against the real captured frames and the
-  same MAC primitives the coordinator and bridge use.
-- **Pending (needs the CC1312):** the probe's platform layer (`probe/main.c`
-  plus a flash target, like `firmware/target`) and the host driver that runs the
-  sequence and decodes the tag. These, and the on-air trial itself, wait for the
-  hardware.
+The sans-IO device role `probe/joiner.{c,h}` (host-tested, `make test`, 19
+checks) is the clean reference. But the on-air run did not need a separate
+probe firmware: the coordinator firmware already configures a chosen EUI,
+broadcasts a datagram sealed under the pairing key (`HL_TX`), and opens a
+pairing-key `d/pair` to us when a pair window is open. The only missing piece
+was transmitting an Enhanced Beacon Request, added as host command
+`HL_SEND_BEACON` behind `#ifdef PROBE` (compiled out of the shipped firmware;
+`make PROBE=1`). The host side is the bench tool `host` `tadocoord.bench.JoinProbe`,
+which configures a joiner EUI, opens a pair window, and loops sending an
+optional beacon (`--beacon`) then a Router Solicitation, decoding anything the
+bridge opens to us.
+
+## Result (2026-11-24)
+
+Run against the user's own bridges on an isolated bench. **No `d/pair` in any
+configuration — offline or online, with or without the beacon.** Posing as a
+joiner does not yield the network key. Logs: `host/state/joinprobe-*.log`.
+
+| Setup | Commissioning (pairing-key) RA | `d/pair` |
+|---|---|---|
+| Offline bridge, pairing mode, beacon + RS | none | none |
+| Same bridge online, pairing mode, beacon + RS | yes | none |
+
+- **The beacon was not the blocker** — adding it changed nothing.
+- **Commissioning needs the cloud.** Offline, a bridge in pairing mode (light
+  blinking) stays silent to a joiner — not even a pairing-key RA; its own
+  network-key traffic is all we hear. Online, the commissioning RA returns. The
+  blinking light is a local state; the handshake is cloud-driven.
+- **Even online, no key for an unknown device.** The bridge engages our
+  invented EUI at the radio layer but will not `d/pair` it: the cloud has no
+  record of it (a real device is "added" in the app to claim it).
+
+So the pairing key buys a conversation, not an entitlement; the key hand-out is
+gated on the cloud recognizing a specific device, and even then rides tag
+`0x07`, wrapped under a per-device KEK we do not hold. The only route to a real
+`d/pair` is a genuine device claimed to the account — a passive sniff of that
+join, not this active probe. The clean-room approach (mint our own key on our
+own coordinator) stays the only way in.

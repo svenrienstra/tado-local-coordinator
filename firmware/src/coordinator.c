@@ -304,11 +304,35 @@ static void put_stats(struct coordinator *c, uint8_t *reply, size_t *reply_len)
     *reply_len = sizeof v;
 }
 
+#ifdef PROBE
+/* PROBE build only (docs/PROBE.md): broadcast an Enhanced Beacon Request as a
+ * joining device would, to test whether a bridge wants it before d/pair. Uses
+ * the configured EUI as the joiner identity; not in the shipped firmware. */
+static enum hl_status do_send_beacon(struct coordinator *c)
+{
+    uint8_t frame[MAC_BEACON_REQ_LEN];
+    mac_build_beacon_request(frame, PAIRING_KEY, c->seq, c->eui, c->counter);
+    if (!radio_send_at(frame, sizeof frame, radio_rat_now() + 5u * RAT_PER_MS))
+        return HL_BUSY;
+    c->seq++;
+    c->counter++;
+    return HL_OK;
+}
+#endif
+
 static enum hl_status handle(void *ctx, uint8_t type, const uint8_t *p, size_t len,
                              uint8_t *reply, size_t *reply_len)
 {
     struct coordinator *c = ctx;
     switch (type) {
+#ifdef PROBE
+    case HL_SEND_BEACON:
+        if (!c->configured)
+            return HL_NOT_CONFIGURED;
+        if (len != 0)
+            return HL_BAD_ARG;
+        return do_send_beacon(c);
+#endif
     case HL_PING:
         put16(&reply[0], FW_VERSION);
         put32(&reply[2], radio_rat_now());

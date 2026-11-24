@@ -60,6 +60,13 @@ ifneq ($(SNIFF),)
 DEFINES += -DSNIFF
 endif
 
+# PROBE=1: the join-probe build (../probe, ../docs/PROBE.md). Adds the
+# HL_SEND_BEACON host command so the host can broadcast an Enhanced Beacon
+# Request as a joiner. Compiled out of the shipped firmware. `make clean` first.
+ifneq ($(PROBE),)
+DEFINES += -DPROBE
+endif
+
 CFLAGS := -std=c11 -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
   -Os -g -ffunction-sections -fdata-sections \
   $(DEFINES) -Isrc -Itarget -I$(SDK)/source -I$(SDK)/kernel/nortos -I$(SDK)/kernel/nortos/posix

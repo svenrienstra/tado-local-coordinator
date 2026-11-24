@@ -12,6 +12,7 @@ enum {
     HL_PAIR_WINDOW = 0x03,
     HL_TX = 0x04,
     HL_STATS = 0x05,
+    HL_SEND_BEACON = 0x06, /* PROBE build only: broadcast an Enhanced Beacon Request */
     HL_EV_LOG = 0xC0,
     HL_EV_RX = 0xC1,
     HL_EV_BEACON_ANSWERED = 0xC2,
